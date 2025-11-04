@@ -1,0 +1,561 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Mental Health Chatbot</title>
+  <style>
+    :root{
+      --bg:#0b1020;
+      --panel:#0f1724;
+      --muted:#94a3b8;
+      --text:#e6eef8;
+      --accent:#7c3aed; /* purple */
+      --accent-2:#5b21b6;
+      --user:#6b21a8;
+    }
+    *{box-sizing:border-box}
+  body{font-family:Inter, ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Roboto, 'Helvetica Neue', Arial; margin:0; background:linear-gradient(180deg,var(--bg),#08101a); color:var(--text); min-height:100vh; overflow:hidden}
+  .app{height:calc(100vh - 56px); overflow:hidden}
+  .app{max-width:1100px; margin:28px auto; display:grid; grid-template-columns:320px 1fr; gap:20px; padding:20px}
+
+    /* sidebar */
+    .sidebar{background:linear-gradient(180deg,var(--panel),#0b1220); border-radius:12px; padding:14px; height:calc(100vh - 96px); display:flex; flex-direction:column}
+    .brand{display:flex; align-items:center; gap:10px; margin-bottom:12px}
+    .logo{width:36px; height:36px; border-radius:8px; background:linear-gradient(135deg,var(--accent),var(--accent-2)); box-shadow:0 6px 18px rgba(123,31,255,0.18)}
+    .brand h1{font-size:14px; margin:0}
+    .new-session{margin:8px 0; background:transparent; border:1px solid rgba(124,58,237,0.18); color:var(--text); padding:8px; border-radius:8px; cursor:pointer}
+    .sessions{flex:1; overflow:auto; margin-top:12px}
+
+  .nav-item{display:flex;align-items:center;gap:10px;padding:8px;border-radius:8px;color:var(--muted);cursor:pointer}
+  .nav-item:hover{background:rgba(255,255,255,0.02);color:var(--text)}
+  .nav-item .icon{width:18px;height:18px;display:inline-flex;align-items:center;justify-content:center;color:var(--muted)}
+  .section-title{font-size:12px;color:var(--muted);margin:12px 4px}
+  .sidebar-footer{margin-top:12px;display:flex;align-items:center;gap:10px}
+
+    /* session item three-dots (kebab) menu */
+    .session-item{position:relative; padding-right:34px}
+    .kebab-btn{position:absolute; right:6px; top:8px; width:24px; height:24px; display:none; align-items:center; justify-content:center; border:none; border-radius:6px; background:transparent; color:var(--muted); cursor:pointer}
+    .session-item:hover .kebab-btn{display:inline-flex;}
+    .kebab-btn:hover{background:rgba(255,255,255,0.06); color:var(--text)}
+    .kebab-menu{position:absolute; right:6px; top:34px; min-width:150px; background:linear-gradient(180deg,var(--panel),#0b1220); border:1px solid rgba(255,255,255,0.06); border-radius:8px; box-shadow:0 10px 28px rgba(0,0,0,0.45); display:none; z-index:60}
+    .kebab-menu.open{display:block}
+    .kebab-item{display:flex; gap:10px; align-items:center; padding:10px 12px; font-size:13px; color:var(--text); cursor:pointer}
+    .kebab-item:hover{background:rgba(255,255,255,0.06)}
+    .kebab-sep{height:1px; background:rgba(255,255,255,0.06); margin:4px 0}
+  .session-item.active{background:rgba(124,58,237,0.10) !important;}
+
+    /* chat panel */
+    .panel{background:linear-gradient(180deg,#071022,#07121b); border-radius:12px; padding:18px; height:calc(100vh - 96px); display:flex; flex-direction:column}
+    .messages{flex:1; overflow:auto; padding:8px 4px}
+    .msg{max-width:72%; padding:12px 14px; border-radius:12px; margin:10px 0; line-height:1.4}
+  .msg{word-break:break-word; max-width:68%;}
+    .msg.bot{background:linear-gradient(180deg, rgba(255,255,255,0.02), rgba(255,255,255,0.008)); color:var(--text); align-self:flex-start; box-shadow:0 2px 6px rgba(0,0,0,0.4)}
+    .msg.user{background:linear-gradient(180deg,var(--accent),var(--accent-2)); color:white; align-self:flex-end}
+
+    .input-row{display:flex; gap:8px; align-items:center; margin-top:12px}
+    .input{flex:1; background:transparent; border:1px solid rgba(255,255,255,0.06); padding:12px 14px; border-radius:12px; color:var(--text)}
+    .send{background:linear-gradient(90deg,var(--accent),var(--accent-2)); color:white; border:none; padding:10px 14px; border-radius:10px; cursor:pointer}
+
+    .muted{color:var(--muted); font-size:13px}
+
+  /* offline banner styles removed per request */
+
+    /* Responsive: on small screens hide the sidebar by default and allow toggling it */
+    @media(max-width:900px){
+      .app{grid-template-columns:1fr}
+      .sidebar{position:fixed; left:0; top:0; bottom:0; width:280px; z-index:40; transform:translateX(-100%); transition:transform 200ms ease; box-shadow: 0 8px 30px rgba(0,0,0,0.6)}
+      .sidebar.open{transform:translateX(0)}
+      .panel{padding-top:12px}
+      .menu-btn{position:fixed; left:12px; top:12px; z-index:50; background:var(--panel); border-radius:8px; border:1px solid rgba(255,255,255,0.04); color:var(--text); padding:8px 10px; cursor:pointer}
+    }
+  </style>
+</head>
+<body>
+  <div class="app">
+    <aside class="sidebar">
+      <div class="brand">
+        <div class="logo"></div>
+        <h1>Mental Health Chat</h1>
+      </div>
+      <div id="status" class="muted" style="margin-bottom:8px">Checking backend status…</div>
+      <button id="newBtn" class="new-session">+ New chat</button>
+
+      <div class="sessions">
+        <ul id="sessionList" style="list-style:none; padding:0; margin:0; display:flex; flex-direction:column; gap:8px">
+          <li class="muted">Recent sessions will appear here</li>
+        </ul>
+      </div>
+      <div style="height:18px"></div>
+      <button id="logoutBtn" class="new-session" style="margin-top:10px">Logout</button>
+    </aside>
+
+    <section class="panel">
+      <button id="menuBtn" class="menu-btn" style="display:none">☰</button>
+      <!-- offline banner removed per request -->
+      <div class="messages" id="chat"></div>
+
+      <form id="form" class="input-row">
+        <input id="input" class="input" type="text" placeholder="Type a message…" autocomplete="off" />
+        <button class="send" type="submit">Send</button>
+      </form>
+    </section>
+  </div>
+
+  <script>
+  // Minimal client for the backend API. No top-level await used.
+  // Detect the API base automatically: same-origin (if served via http), 8002, then 8011. window.API can override.
+  let API = window.API || localStorage.getItem('mh_api') || '';
+  async function detectApiBase(){
+    if(API) return API;
+    const candidates = [];
+    try{ if(location.origin && /^https?:/i.test(location.origin)) candidates.push(location.origin); }catch(_e){}
+    candidates.push('http://127.0.0.1:8002','http://127.0.0.1:8011');
+    for(const base of candidates){
+      try{
+        const ctrl = new AbortController();
+        const timer = setTimeout(()=>ctrl.abort(), 1200);
+        const res = await fetch(`${base}/api/status`, { signal: ctrl.signal });
+        clearTimeout(timer);
+        if(res.ok){ API = base; localStorage.setItem('mh_api', API); return API; }
+      }catch(_e){}
+    }
+    // Fallback so the UI still works offline; real calls will fail but offline responder may kick in.
+    API = 'http://127.0.0.1:8002';
+    return API;
+  }
+
+  const sessionEl = document.getElementById('sessionEl'); // may be null now
+  const chatEl = document.getElementById('chat');
+  const newBtn = document.getElementById('newBtn');
+  const sessionListEl = document.getElementById('sessionList');
+  const form = document.getElementById('form');
+  const input = document.getElementById('input');
+  // offline banner removed per request
+
+  let sessionId = localStorage.getItem('mh_session') || '';
+
+  // --- Deep link support: #sid=<sessionId> ---
+  function getSidFromURL(){
+    const h = (window.location.hash||'').replace(/^#/, '');
+    const m = h.match(/(?:^|&)sid=([^&]+)/);
+    return m ? decodeURIComponent(m[1]) : '';
+  }
+  function setSidInURL(id){
+    const base = window.location.pathname;
+    const newHash = `#sid=${encodeURIComponent(id)}`;
+    if(window.location.hash !== newHash){ window.location.hash = newHash; }
+  }
+  window.addEventListener('hashchange', ()=>{
+    const sid = getSidFromURL();
+    if(sid && sid !== sessionId){ loadSession(sid); }
+  });
+
+  // Sidebar toggle for small screens
+  const menuBtn = document.getElementById('menuBtn');
+  const sidebar = document.querySelector('.sidebar');
+  function updateMenuVisibility(){
+    if(window.innerWidth <= 900){ menuBtn.style.display = 'block'; } else { menuBtn.style.display = 'none'; sidebar.classList.remove('open'); }
+  }
+  window.addEventListener('resize', updateMenuVisibility);
+  updateMenuVisibility();
+  menuBtn.addEventListener('click', ()=> sidebar.classList.toggle('open'));
+
+  async function ensureSession() {
+    if (sessionId) {
+      if (sessionEl) sessionEl.value = sessionId;
+      // Ensure an entry exists without overwriting its title
+      const exists = getStoredSessions().some(x=>x.id===sessionId);
+      if(!exists){ addStoredSession(sessionId, 'New chat'); }
+      return sessionId;
+    }
+    try {
+      const res = await fetch(`${API}/api/session`, { method: 'POST' });
+      const data = await res.json();
+  sessionId = data.session_id;
+  localStorage.setItem('mh_session', sessionId);
+  // create a session placeholder titled "New chat"; we'll rename after first user message
+  addStoredSession(sessionId, 'New chat');
+      if (sessionEl) sessionEl.value = sessionId;
+      return sessionId;
+    } catch (err) {
+      console.error('Failed to create session', err);
+  // silently ignore per request (no banner)
+      // Offline fallback: create a local session id so user can still chat and see it in the sidebar
+      const localId = 'local-' + (self.crypto && crypto.randomUUID ? crypto.randomUUID() : Math.random().toString(36).slice(2));
+      sessionId = localId;
+      localStorage.setItem('mh_session', localId);
+      addStoredSession(localId, 'New chat');
+      if (sessionEl) sessionEl.value = localId;
+      return localId;
+    }
+  }
+
+  // ----- session list stored in localStorage -----
+  function getStoredSessions(){
+    try{ return JSON.parse(localStorage.getItem('mh_sessions')||'[]') }catch(e){return[]}
+  }
+  function saveStoredSessions(s){ localStorage.setItem('mh_sessions', JSON.stringify(s)) }
+  function findStoredSession(id){ return getStoredSessions().find(x=>x.id===id); }
+  function addStoredSession(id, title){
+    const s = getStoredSessions();
+    // remove existing with same id
+    const filtered = s.filter(x=>x.id!==id);
+    const now = new Date().toISOString();
+    filtered.unshift({id, title: title||id, updated: now});
+    saveStoredSessions(filtered.slice(0,50));
+    renderSessions();
+  }
+  function updateStoredSessionTitle(id, title){
+    const s = getStoredSessions();
+    const idx = s.findIndex(x=>x.id===id);
+    if(idx>=0){ s[idx].title = title; s[idx].updated = new Date().toISOString(); saveStoredSessions(s); renderSessions(); }
+  }
+  function renderSessions(filter=''){
+    const list = getStoredSessions();
+    sessionListEl.innerHTML='';
+  if(list.length===0){ sessionListEl.innerHTML='<li class="muted">No chats yet — start a new chat</li>'; return }
+    const q = (filter||'').toLowerCase();
+    for(const it of list){
+      const li = document.createElement('li');
+      li.style.padding = '8px';
+      li.style.borderRadius = '8px';
+      li.style.cursor = 'pointer';
+      li.style.background = 'transparent';
+      li.onmouseenter = ()=> li.style.background = 'rgba(255,255,255,0.02)';
+      li.onmouseleave = ()=> li.style.background = 'transparent';
+      li.onclick = ()=> loadSession(it.id);
+      li.classList.add('session-item');
+      if(it.id === sessionId){ li.classList.add('active'); }
+  const title = document.createElement('div'); title.textContent = it.title && it.title.trim() !== '' ? it.title : (it.id || 'Conversation'); title.style.fontSize='13px';
+      const sub = document.createElement('div'); sub.textContent = new Date(it.updated).toLocaleString(); sub.className='muted'; sub.style.fontSize='12px';
+      li.appendChild(title); li.appendChild(sub);
+
+      // kebab button
+      const kebab = document.createElement('button');
+      kebab.className = 'kebab-btn';
+      kebab.setAttribute('aria-label','Open chat actions');
+      kebab.textContent = '⋯';
+      kebab.addEventListener('click', (e)=>{
+        e.stopPropagation();
+        closeAllKebabMenus();
+        menu.classList.toggle('open');
+      });
+      li.appendChild(kebab);
+
+      // kebab menu
+      const menu = document.createElement('div');
+      menu.className = 'kebab-menu';
+      // Rename
+      const itRename = document.createElement('div');
+      itRename.className = 'kebab-item';
+      itRename.innerHTML = '<span>✎</span><span>Rename</span>';
+      itRename.addEventListener('click', (e)=>{
+        e.stopPropagation();
+        menu.classList.remove('open');
+        promptRename(it.id, it.title);
+      });
+      // Copy link
+      const itCopy = document.createElement('div');
+      itCopy.className = 'kebab-item';
+      itCopy.innerHTML = '<span>🔗</span><span>Copy link</span>';
+      itCopy.addEventListener('click', async (e)=>{
+        e.stopPropagation();
+        menu.classList.remove('open');
+        const url = `${window.location.origin}${window.location.pathname}#sid=${encodeURIComponent(it.id)}`;
+        try{ await navigator.clipboard.writeText(url); }catch(_e){}
+        alert('Session link copied. Open it in a new tab to run multiple sessions.');
+      });
+      // Separator
+      const sep = document.createElement('div'); sep.className='kebab-sep';
+      // Delete
+      const itDelete = document.createElement('div');
+      itDelete.className = 'kebab-item';
+      itDelete.style.color = '#ff9aa2';
+      itDelete.innerHTML = '<span>🗑️</span><span>Delete</span>';
+      itDelete.addEventListener('click', (e)=>{
+        e.stopPropagation();
+        menu.classList.remove('open');
+        confirmDelete(it.id);
+      });
+  menu.appendChild(itRename); menu.appendChild(itCopy); menu.appendChild(sep); menu.appendChild(itDelete);
+      li.appendChild(menu);
+
+      sessionListEl.appendChild(li);
+    }
+  }
+
+  function loadSession(id){ sessionId = id; localStorage.setItem('mh_session', id); setSidInURL(id); renderSessions(); loadHistory(); }
+
+  function closeAllKebabMenus(){
+    document.querySelectorAll('.kebab-menu.open').forEach(el=> el.classList.remove('open'));
+  }
+
+  function promptRename(id, currentTitle){
+    let title = prompt('Rename chat', (currentTitle||'').trim() || 'Conversation');
+    if(title==null) return; // cancel
+    title = title.trim();
+    if(!title) return;
+    updateStoredSessionTitle(id, title);
+  }
+
+  function confirmDelete(id){
+    const ok = confirm('Delete this chat? This will remove it from your sidebar.');
+    if(!ok) return;
+    removeStoredSession(id);
+    // If the current session was deleted, switch to another one or create new
+    const list = getStoredSessions();
+    if(sessionId === id){
+      if(list.length>0){ loadSession(list[0].id); }
+      else{ (async()=>{ sessionId=''; await ensureSession(); await loadHistory(); })(); }
+    } else {
+      renderSessions();
+    }
+  }
+
+  function removeStoredSession(id){
+    const s = getStoredSessions();
+    const filtered = s.filter(x=>x.id!==id);
+    saveStoredSessions(filtered);
+    if(localStorage.getItem('mh_session')===id){ localStorage.removeItem('mh_session'); }
+  }
+
+  // searchInput removed from UI; no-op
+
+  async function loadHistory() {
+    if (!sessionId) return render();
+    try {
+      const res = await fetch(`${API}/api/messages/${sessionId}`);
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  const msgs = await res.json();
+  const mapped = msgs.map(m => ({ role: m.role, content: m.content, mood: m.mood }));
+      render(mapped);
+  // Keep placeholder 'New chat' until the first user message; avoid overwriting titles here.
+    } catch (err) {
+      console.error('Failed to load history', err);
+      // try offline cache first
+      try{
+        const cached = JSON.parse(localStorage.getItem('mh_history_'+sessionId)||'null');
+        if(Array.isArray(cached) && cached.length){ render(cached); return }
+      }catch(_e){}
+      render();
+    }
+  }
+
+  async function fetchStatus(){
+    const sEl = document.getElementById('status');
+    try {
+      const res = await fetch(`${API}/api/status`);
+      if (!res.ok) throw new Error(res.status);
+      const data = await res.json();
+      window.LLM_ONLY = !!data.using_llm;
+      if (data.using_llm) {
+        sEl.textContent = `LLM available — responses powered by OpenAI (API: ${API})`;
+      } else if (data.llm_configured) {
+        sEl.textContent = `LLM configured but unavailable — using local fallback (API: ${API})`;
+      } else {
+        sEl.textContent = `Local responder (no OpenAI key) (API: ${API})`;
+      }
+  return true;
+    } catch (err) {
+      console.error('Failed to fetch status', err);
+  if (sEl) sEl.textContent = 'Status unavailable';
+      return false;
+    }
+  }
+
+  function render(msgs) {
+    chatEl.innerHTML = '';
+    if (!msgs || msgs.length === 0) {
+      msgs = [{ role: 'assistant', content: 'Hi, I’m here with you. What would be most helpful to talk about today?' }];
+    }
+    try{ if(sessionId){ localStorage.setItem('mh_history_'+sessionId, JSON.stringify(msgs)); } }catch(_e){}
+    for (const m of msgs) {
+      const div = document.createElement('div');
+      div.className = `msg ${m.role === 'user' ? 'user' : 'bot'}`;
+      // If the message has an attached mood, show a small badge for assistant messages (skip neutral)
+      if (m.role !== 'user' && m.mood && m.mood !== 'neutral') {
+        const badge = document.createElement('div');
+        badge.style.fontSize = '12px';
+        badge.style.opacity = '0.85';
+        badge.style.marginBottom = '6px';
+        badge.className = 'muted';
+        // small emoji map for moods
+        const moodMap = { sad: '😔', anxious: '😟', happy: '😊', grateful: '🙏', encouraging: '💪', neutral: '🙂' };
+        const emoji = moodMap[m.mood] || '🙂';
+          // Show emoji only (no textual label) per UI preference.
+          badge.textContent = emoji;
+          // accessibility: expose mood to screen readers
+          badge.setAttribute('aria-label', `mood: ${m.mood}`);
+        div.appendChild(badge);
+      }
+      const text = document.createElement('div');
+      text.textContent = m.content;
+      div.appendChild(text);
+      chatEl.appendChild(div);
+    }
+    chatEl.scrollTop = chatEl.scrollHeight;
+  }
+
+  newBtn.onclick = async () => {
+    // create and switch to a fresh session
+    localStorage.removeItem('mh_session');
+    sessionId = '';
+    await ensureSession();
+    await loadHistory();
+    renderSessions();
+  };
+
+  // Logout handler: clear session and redirect to login
+  const logoutBtn = document.getElementById('logoutBtn');
+  if (logoutBtn) {
+    logoutBtn.addEventListener('click', () => {
+      localStorage.removeItem('mh_session');
+      sessionId = '';
+      window.location.href = 'login.html';
+    });
+  }
+
+  form.addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const text = input.value.trim();
+    if (!text) return;
+
+    const bubbles = [...chatEl.querySelectorAll('.msg')].map(el => ({ role: el.classList.contains('user') ? 'user' : 'assistant', content: el.textContent }));
+    bubbles.push({ role: 'user', content: text });
+    // Defer renaming until after the first exchange completes (assistant replies)
+    input.value = '';
+    render(bubbles);
+
+    const typing = document.createElement('div');
+    typing.className = 'msg bot typing';
+    typing.textContent = '…';
+    chatEl.appendChild(typing);
+    chatEl.scrollTop = chatEl.scrollHeight;
+
+    try {
+      const res = await fetch(`${API}/api/chat`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ session_id: sessionId, messages: bubbles })
+      });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const data = await res.json();
+      typing.remove();
+  bubbles.push({ role: 'assistant', content: data.reply, mood: data.mood });
+      render(bubbles);
+      // After first exchange, label the chat if still 'New chat'
+      try{
+        const sess = findStoredSession(sessionId);
+        if(sess && (sess.title === 'New chat' || !sess.title || sess.title === sessionId)){
+          updateStoredSessionTitle(sessionId, text.slice(0,60));
+        }
+      }catch(_e){}
+    } catch (err) {
+      console.error('Chat request failed', err);
+      typing.remove();
+      // If we know LLM is active, don't fabricate content locally — show a connection issue only
+      if (window.LLM_ONLY) {
+        bubbles.push({ role: 'assistant', content: 'Connection issue — please check that the server is running and try again.', mood: 'neutral' });
+      } else {
+        // Local offline fallback reply so the user still gets a response
+        const reply = localOfflineReply(text);
+        bubbles.push({ role: 'assistant', content: reply, mood: 'neutral' });
+      }
+      render(bubbles);
+      // Also rename after first exchange even when offline
+      try{
+        const sess = findStoredSession(sessionId);
+        if(sess && (sess.title === 'New chat' || !sess.title || sess.title === sessionId)){
+          updateStoredSessionTitle(sessionId, text.slice(0,60));
+        }
+      }catch(_e){}
+    }
+  });
+
+  (async () => {
+    // Detect API base before making any requests
+    await detectApiBase();
+    window.API = API; // expose for console override/inspection
+    // If URL has a sid, prefer it
+    const urlSid = getSidFromURL();
+    if(urlSid){
+      sessionId = urlSid;
+      localStorage.setItem('mh_session', urlSid);
+      // ensure appears in sidebar if missing
+      const exists = getStoredSessions().some(x=>x.id===urlSid);
+      if(!exists) addStoredSession(urlSid, 'New chat');
+    }
+    await ensureSession();
+    setSidInURL(sessionId);
+    await loadHistory();
+    await fetchStatus();
+    renderSessions();
+  })();
+
+  // offline banner hooks removed
+
+  // Close any open kebab menu when clicking outside
+  document.addEventListener('click', (e)=>{
+    if(!(e.target.closest && (e.target.closest('.kebab-menu') || e.target.closest('.kebab-btn')))){
+      closeAllKebabMenus();
+    }
+  });
+  // --- Simple local offline responder (very lightweight heuristic) ---
+  let _lastOfflineKind = '';
+  function localOfflineReply(userText){
+    const t = (userText||'').toLowerCase();
+    // helpers for non-repeating choices
+    const pick = (kind, arr)=>{
+      let choice = arr[Math.floor(Math.random()*arr.length)];
+      if(kind === _lastOfflineKind && arr.length > 1){
+        // avoid immediate repetition of same kind by picking next option
+        const idx = (arr.indexOf(choice)+1) % arr.length;
+        choice = arr[idx];
+      }
+      _lastOfflineKind = kind; return choice;
+    };
+    // Negations or negative qualifiers (e.g., "not good") should not trigger positive replies
+    if(/\b(not\s+(good|great|better|okay|ok|fine|happy|alright|well)|not\s+so\s+good|could\s+be\s+better|worse\b|awful\b|terrible\b|really\s+bad|so\s+bad|bad\b|meh\b|so-?so\b)\b/.test(t))
+      return pick('neg', [
+        "I'm sorry you're feeling that way. Do you want to talk about what's making it not-so-good, or try a small calming exercise together?",
+        "That sounds rough. Would you like to unpack it a bit, or should we try a tiny grounding cue together?",
+      ]);
+    if(/\b(hi|hello|hey)\b/.test(t)) return pick('hello', [
+      "Hey — I'm here. How are you feeling right now?",
+      "Hi! What's on your mind today?",
+    ]);
+    // Informational asks
+    if(/\b(what\s+is|define|meaning\s+of|explain)\s+anxiety\b/.test(t)) return pick('info_anx', [
+      "Anxiety is a natural stress response — worry plus a body alarm.\n• Mind: racing 'what if?' thoughts\n• Body: fast heartbeat, tense, shaky\n• Life: hard to sleep or focus\nWant a tiny grounding idea, or to talk about triggers?",
+    ]);
+    if(/\b(what\s+is|define|meaning\s+of|explain)\s+depression\b/.test(t)) return pick('info_dep', [
+      "Depression is a lasting dip in mood, energy, and interest.\n• Mood: low, empty, tearful\n• Life: less interest/pleasure\n• Body: sleep/appetite changes, fatigue\nI’m here — want to share a bit, or try one small step that could help today?",
+    ]);
+    if(/\b(anxious|panic|nervous|worried)\b/.test(t)) return pick('anx', [
+      "That sounds really tough. Want to share a bit more, or try a short grounding cue together?",
+      "I hear you. Would you prefer to talk it through, or do one minute of box breathing?",
+    ]);
+    if(/\b(sad|down|depress)\b/.test(t)) return pick('sad', [
+      "I'm really sorry you're feeling this way. What part feels heaviest at the moment?",
+      "That sounds painful. Do you want to tell me what happened, or would a small distraction help?",
+    ]);
+    // Jokes on request (light, kind humor)
+    if(/\b(joke|make\s+me\s+laugh|tell\s+me\s+a\s+joke|funny)\b/.test(t)) return pick('joke', [
+      "Why did the scarecrow win an award? Because he was outstanding in his field.",
+      "Why don’t scientists trust atoms? Because they make up everything.",
+      "I asked my calendar if it had time for me — it said, ‘I’m booked.’",
+    ]);
+    // Positive words only if not negated
+    if(/\b(good|great|better|okay|ok|fine|well|happy)\b/.test(t)) return pick('pos', [
+      "That's nice to hear — what helped you feel that way today?",
+      "Love that. What was the highlight for you?",
+    ]);
+    return pick('misc', [
+      "Thanks for sharing. Do you want to talk more about it, or should we try a tiny step together?",
+      "I hear you. Would it help to break it down, or try a short grounding exercise?",
+    ]);
+  }
+  </script>
+</body>
+     

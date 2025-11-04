@@ -1,0 +1,112 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Login — Mental Health Chat</title>
+  <style>
+    :root{
+      --bg:#0b1020;
+      --panel:#0f1724;
+      --muted:#94a3b8;
+      --text:#e6eef8;
+      --accent:#7c3aed;
+      --accent-2:#5b21b6;
+    }
+    body{margin:0;font-family:Inter,system-ui,Segoe UI,Roboto,Arial;background:linear-gradient(180deg,var(--bg),#08101a);color:var(--text);min-height:100vh;display:flex;align-items:center;justify-content:center}
+    .card{width:100%;max-width:420px;background:linear-gradient(180deg,var(--panel),#07121b);padding:28px;border-radius:12px;box-shadow:0 10px 30px rgba(0,0,0,0.6)}
+    .logo{width:46px;height:46px;border-radius:10px;background:linear-gradient(135deg,var(--accent),var(--accent-2));margin-bottom:14px}
+    h1{margin:0 0 8px 0}
+    p{color:var(--muted);margin:0 0 20px 0}
+    label{display:block;font-size:13px;color:var(--muted);margin-bottom:6px}
+    input[type='text'],input[type='password']{width:100%;padding:12px 14px;border-radius:10px;border:1px solid rgba(255,255,255,0.06);background:transparent;color:var(--text)}
+    .field{margin-bottom:14px}
+    .actions{display:flex;gap:8px;align-items:center}
+    .btn{background:linear-gradient(90deg,var(--accent),var(--accent-2));color:white;padding:10px 14px;border-radius:10px;border:none;cursor:pointer}
+    .muted{color:var(--muted);font-size:13px}
+    .link{color:var(--accent);text-decoration:none}
+    .show-toggle{background:transparent;border:none;color:var(--muted);cursor:pointer;margin-left:8px}
+  </style>
+</head>
+<body>
+  <div class="card">
+    <div class="logo"></div>
+    <h1>Log in</h1>
+    <p class="muted">Sign in to your Mental Health Chat session.</p>
+
+    <div class="field">
+      <label for="user">Email or username</label>
+      <input id="user" type="text" placeholder="you@example.com or username" />
+    </div>
+
+    <div class="field">
+      <label for="password">Password</label>
+      <div style="display:flex;align-items:center">
+        <input id="password" type="password" placeholder="••••••••" />
+        <button id="toggle" class="show-toggle" type="button">Show</button>
+      </div>
+    </div>
+
+    <div id="message" style="margin-bottom:12px;height:18px"></div>
+
+    <div class="actions">
+      <button id="submit" class="btn">Sign in</button>
+      <div style="flex:1"></div>
+      <button id="createAccount" class="btn" style="background:transparent;border:1px solid rgba(255,255,255,0.06);color:var(--accent);">Create a new account</button>
+    </div>
+  </div>
+
+  <script>
+    const toggle = document.getElementById('toggle');
+    const pwd = document.getElementById('password');
+    toggle.addEventListener('click', () => {
+      if (pwd.type === 'password') { pwd.type = 'text'; toggle.textContent = 'Hide'; }
+      else { pwd.type = 'password'; toggle.textContent = 'Show'; }
+    });
+
+    function showMessage(text, type = 'error'){
+      const el = document.getElementById('message');
+      el.textContent = text;
+      el.style.color = type === 'error' ? '#ff6b6b' : '#8ef2c2';
+    }
+
+    document.getElementById('submit').addEventListener('click', (e) => {
+      e.preventDefault();
+      const user = document.getElementById('user').value.trim();
+      const pass = document.getElementById('password').value;
+      if (!user) { showMessage('Please enter your email or username'); return; }
+      if (!pass) { showMessage('Please enter your password'); return; }
+
+      // Demo user store in localStorage: users is an object keyed by email or username
+      const raw = localStorage.getItem('users');
+      const users = raw ? JSON.parse(raw) : {};
+
+      // Try lookup by exact key (username) or by email field inside each user
+      let found = null;
+      if (users[user]) found = users[user];
+      else {
+        // search by email
+        for (const k of Object.keys(users)){
+          if (users[k].email && users[k].email.toLowerCase() === user.toLowerCase()) { found = users[k]; break; }
+        }
+      }
+
+      if (!found) { showMessage('Username or email not found'); return; }
+      if (found.password !== pass) { showMessage('Wrong password'); return; }
+
+      // Successful login (demo)
+      localStorage.setItem('mh_session', user);
+      showMessage('Logged in — redirecting...', 'success');
+      setTimeout(()=> window.location.href = 'index.html', 700);
+    });
+
+    // Navigate to signup page
+    const createBtn = document.getElementById('createAccount');
+    if (createBtn) {
+      createBtn.addEventListener('click', () => {
+        window.location.href = 'signup.html';
+      });
+    }
+  </script>
+</body>
+</html>

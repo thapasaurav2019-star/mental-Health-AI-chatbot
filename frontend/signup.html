@@ -1,0 +1,120 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Create Account — Mental Health Chat</title>
+  <style>
+    :root{
+      --bg:#0b1020;
+      --panel:#0f1724;
+      --muted:#94a3b8;
+      --text:#e6eef8;
+      --accent:#7c3aed;
+      --accent-2:#5b21b6;
+    }
+    body{margin:0;font-family:Inter,system-ui,Segoe UI,Roboto,Arial;background:linear-gradient(180deg,var(--bg),#08101a);color:var(--text);min-height:100vh;display:flex;align-items:center;justify-content:center}
+    .card{width:100%;max-width:520px;background:linear-gradient(180deg,var(--panel),#07121b);padding:28px;border-radius:12px;box-shadow:0 10px 30px rgba(0,0,0,0.6)}
+    .logo{width:46px;height:46px;border-radius:10px;background:linear-gradient(135deg,var(--accent),var(--accent-2));margin-bottom:14px}
+    h1{margin:0 0 8px 0}
+    p{color:var(--muted);margin:0 0 20px 0}
+    label{display:block;font-size:13px;color:var(--muted);margin-bottom:6px}
+    input[type='text'],input[type='password'],input[type='email']{width:100%;padding:12px 14px;border-radius:10px;border:1px solid rgba(255,255,255,0.06);background:transparent;color:var(--text)}
+    .field{margin-bottom:14px}
+    .actions{display:flex;gap:8px;align-items:center}
+    .btn{background:linear-gradient(90deg,var(--accent),var(--accent-2));color:white;padding:10px 14px;border-radius:10px;border:none;cursor:pointer}
+    .muted{color:var(--muted);font-size:13px}
+    .link{color:var(--accent);text-decoration:none}
+    .show-toggle{background:transparent;border:none;color:var(--muted);cursor:pointer;margin-left:8px}
+  </style>
+</head>
+<body>
+  <div class="card">
+    <div class="logo"></div>
+    <h1>Create account</h1>
+    <p class="muted">Create a free account to save your sessions (demo).</p>
+
+    <div class="field">
+      <label for="name">Full name</label>
+      <input id="name" type="text" placeholder="Your full name" />
+    </div>
+
+    <div class="field">
+      <label for="email">Email</label>
+      <input id="email" type="email" placeholder="you@example.com" />
+    </div>
+
+    <div class="field">
+      <label for="password">Password</label>
+      <div style="display:flex;align-items:center">
+        <input id="password" type="password" placeholder="••••••••" />
+        <button id="togglePwd" class="show-toggle" type="button">Show</button>
+      </div>
+    </div>
+
+    <div class="field">
+      <label for="confirm">Confirm password</label>
+      <div style="display:flex;align-items:center">
+        <input id="confirm" type="password" placeholder="••••••••" />
+        <button id="toggleConfirm" class="show-toggle" type="button">Show</button>
+      </div>
+    </div>
+
+    <div class="actions">
+      <button id="create" class="btn">Create account</button>
+      <div style="flex:1"></div>
+      <a class="link" href="login.html">Back to login</a>
+    </div>
+    <div id="message" style="margin-top:12px;height:18px"></div>
+  </div>
+
+  <script>
+    const togglePwd = document.getElementById('togglePwd');
+    const pwd = document.getElementById('password');
+    togglePwd.addEventListener('click', () => {
+      if (pwd.type === 'password') { pwd.type = 'text'; togglePwd.textContent = 'Hide'; }
+      else { pwd.type = 'password'; togglePwd.textContent = 'Show'; }
+    });
+    const toggleConfirm = document.getElementById('toggleConfirm');
+    const confirm = document.getElementById('confirm');
+    toggleConfirm.addEventListener('click', () => {
+      if (confirm.type === 'password') { confirm.type = 'text'; toggleConfirm.textContent = 'Hide'; }
+      else { confirm.type = 'password'; toggleConfirm.textContent = 'Show'; }
+    });
+
+    function showMessage(text, type='error'){
+      const el = document.getElementById('message');
+      el.textContent = text;
+      el.style.color = type === 'error' ? '#ff6b6b' : '#8ef2c2';
+    }
+
+    document.getElementById('create').addEventListener('click', (e) => {
+      e.preventDefault();
+      const name = document.getElementById('name').value.trim();
+      const email = document.getElementById('email').value.trim();
+      const p1 = document.getElementById('password').value;
+      const p2 = document.getElementById('confirm').value;
+      if (!name) { showMessage('Please enter your full name'); return; }
+      if (!email) { showMessage('Please enter an email'); return; }
+      if (p1.length < 6) { showMessage('Password must be at least 6 characters'); return; }
+      if (p1 !== p2) { showMessage('Passwords do not match'); return; }
+
+      // Demo user store
+      const raw = localStorage.getItem('users');
+      const users = raw ? JSON.parse(raw) : {};
+
+      // Check for duplicate username or email
+      const username = email.split('@')[0];
+      if (users[username]) { showMessage('Username already exists'); return; }
+      for (const k of Object.keys(users)){
+        if (users[k].email && users[k].email.toLowerCase() === email.toLowerCase()){ showMessage('Email already registered'); return; }
+      }
+
+      users[username] = { name, email, password: p1 };
+      localStorage.setItem('users', JSON.stringify(users));
+      showMessage('Account created. Redirecting to login...', 'success');
+      setTimeout(()=> window.location.href = 'login.html', 900);
+    });
+  </script>
+</body>
+</html>

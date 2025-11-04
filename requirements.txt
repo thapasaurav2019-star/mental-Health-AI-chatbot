@@ -1,0 +1,12 @@
+fastapi
+uvicorn
+sqlmodel
+pydantic
+openai>=1
+
+# Optional: spelling correction and testing
+pyspellchecker
+pytest
+httpx
+
+python-dotenv
