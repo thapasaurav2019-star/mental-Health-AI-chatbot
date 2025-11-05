@@ -2,6 +2,8 @@
 
 A lightweight FastAPI + SQLite chatbot focused on supportive, safe mental-health conversations. The backend enforces JSON-only LLM responses and a consent-first flow for optional exercises (like box breathing). A simple static frontend connects to the API.
 
+Repository: thapasaurav2019-star/mental-Health-AI-chatbot
+
 ## Tech stack
 - Backend: FastAPI, SQLModel (SQLite), Uvicorn
 - LLM: OpenAI API (gpt-4o-mini by default)
