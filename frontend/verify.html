@@ -1,0 +1,169 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Verify Email — Mental Health Chat</title>
+  <style>
+    :root{
+      --bg:#0b1020;
+      --panel:#0f1724;
+      --muted:#94a3b8;
+      --text:#e6eef8;
+      --accent:#7c3aed;
+      --accent-2:#5b21b6;
+    }
+    body{margin:0;font-family:Inter,system-ui,Segoe UI,Roboto,Arial;background:linear-gradient(180deg,var(--bg),#08101a);color:var(--text);min-height:100vh;display:flex;align-items:center;justify-content:center}
+    .card{width:100%;max-width:520px;background:linear-gradient(180deg,var(--panel),#07121b);padding:28px;border-radius:12px;box-shadow:0 10px 30px rgba(0,0,0,0.6)}
+    .logo{width:46px;height:46px;border-radius:10px;background:linear-gradient(135deg,var(--accent),var(--accent-2));margin-bottom:14px}
+    h1{margin:0 0 8px 0}
+    p{color:var(--muted);margin:0 0 20px 0}
+    .btn{background:linear-gradient(90deg,var(--accent),var(--accent-2));color:white;padding:10px 14px;border-radius:10px;border:none;cursor:pointer;width:100%;margin-bottom:10px}
+    .btn:disabled{opacity:0.5;cursor:not-allowed}
+    .link{color:var(--accent);text-decoration:none}
+    .message{margin-top:12px;padding:12px;border-radius:8px;text-align:center}
+    .success{background:rgba(142,242,194,0.1);color:#8ef2c2}
+    .error{background:rgba(255,107,107,0.1);color:#ff6b6b}
+    .info{background:rgba(124,58,237,0.1);color:var(--accent)}
+    .spinner{display:inline-block;width:20px;height:20px;border:3px solid rgba(255,255,255,0.3);border-radius:50%;border-top-color:#fff;animation:spin 0.8s linear infinite;vertical-align:middle;margin-right:8px}
+    @keyframes spin{to{transform:rotate(360deg)}}
+  </style>
+</head>
+<body>
+  <div class="card">
+    <div class="logo"></div>
+    <h1>Verify Your Email</h1>
+    <p class="muted" id="subtitle">Verifying your email address...</p>
+
+    <div id="content">
+      <div class="message info" id="status">
+        <div class="spinner"></div>
+        <span>Please wait while we verify your email...</span>
+      </div>
+    </div>
+
+    <div style="text-align:center;margin-top:20px">
+      <a class="link" href="login.html">Back to login</a>
+    </div>
+  </div>
+
+  <script>
+    const API = localStorage.getItem('mh_api') || window.API || 'http://127.0.0.1:8002';
+
+    function showMessage(text, type='info') {
+      const statusEl = document.getElementById('status');
+      statusEl.className = `message ${type}`;
+      statusEl.innerHTML = text;
+    }
+
+    function updateSubtitle(text) {
+      document.getElementById('subtitle').textContent = text;
+    }
+
+    function showResendButton(email) {
+      const content = document.getElementById('content');
+      const resendBtn = document.createElement('button');
+      resendBtn.className = 'btn';
+      resendBtn.textContent = 'Resend Verification Email';
+      resendBtn.id = 'resendBtn';
+      resendBtn.onclick = async () => {
+        resendBtn.disabled = true;
+        resendBtn.innerHTML = '<div class="spinner"></div> Sending...';
+        
+        try {
+          const response = await fetch(`${API}/api/resend-verification?email=${encodeURIComponent(email)}`, {
+            method: 'POST',
+          });
+          
+          const data = await response.json();
+          
+          if (response.ok) {
+            showMessage('Verification email sent! Please check your inbox.', 'success');
+            resendBtn.disabled = true;
+            resendBtn.textContent = 'Email Sent';
+          } else {
+            showMessage(data.detail || 'Failed to resend email', 'error');
+            resendBtn.disabled = false;
+            resendBtn.textContent = 'Resend Verification Email';
+          }
+        } catch (error) {
+          console.error('Resend error:', error);
+          showMessage('Network error. Please try again.', 'error');
+          resendBtn.disabled = false;
+          resendBtn.textContent = 'Resend Verification Email';
+        }
+      };
+      
+      content.appendChild(resendBtn);
+    }
+
+    async function verifyEmail(token) {
+      try {
+        const response = await fetch(`${API}/api/verify-email`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({ token })
+        });
+
+        const data = await response.json();
+
+        if (response.ok) {
+          updateSubtitle('Email verified successfully!');
+          showMessage('✓ Your email has been verified! Redirecting to login...', 'success');
+          
+          // Clear pending verification
+          localStorage.removeItem('pending_verification_email');
+          
+          // Redirect to login after 2 seconds
+          setTimeout(() => {
+            window.location.href = 'login.html';
+          }, 2000);
+        } else {
+          updateSubtitle('Verification failed');
+          showMessage(data.detail || 'Verification failed. The link may have expired.', 'error');
+          
+          // Show resend button if we have an email
+          const email = localStorage.getItem('pending_verification_email');
+          if (email) {
+            showResendButton(email);
+          }
+        }
+      } catch (error) {
+        console.error('Verification error:', error);
+        updateSubtitle('Verification error');
+        showMessage('Network error. Please check your connection and try again.', 'error');
+      }
+    }
+
+    // Check for token in URL
+    const urlParams = new URLSearchParams(window.location.search);
+    const token = urlParams.get('token');
+
+    if (token) {
+      // Verify the token
+      verifyEmail(token);
+    } else {
+      // No token - show waiting for email verification
+      const email = localStorage.getItem('pending_verification_email');
+      
+      if (email) {
+        updateSubtitle('Check your email inbox');
+        showMessage(
+          `We've sent a verification link to <strong>${email}</strong>. ` +
+          `Please click the link in the email to verify your account.`,
+          'info'
+        );
+        showResendButton(email);
+      } else {
+        updateSubtitle('No verification pending');
+        showMessage('No verification token found. Please register or log in.', 'error');
+        setTimeout(() => {
+          window.location.href = 'signup.html';
+        }, 3000);
+      }
+    }
+  </script>
+</body>
+</html>

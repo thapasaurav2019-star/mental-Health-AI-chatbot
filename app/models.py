@@ -33,3 +33,14 @@ class JournalEntry(SQLModel, table=True):
     mood: Optional[str] = None
     note: str
     created_at: datetime = Field(default_factory=datetime.utcnow)
+
+class User(SQLModel, table=True):
+    id: Optional[int] = Field(default=None, primary_key=True)
+    name: str
+    email: str = Field(index=True, unique=True)
+    password: str  # In production, this should be hashed
+    username: str = Field(index=True, unique=True)
+    email_verified: bool = Field(default=False)
+    verification_token: Optional[str] = None
+    verification_token_expiry: Optional[datetime] = None
+    created_at: datetime = Field(default_factory=datetime.utcnow)

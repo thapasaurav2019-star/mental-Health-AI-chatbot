@@ -88,7 +88,10 @@
       el.style.color = type === 'error' ? '#ff6b6b' : '#8ef2c2';
     }
 
-    document.getElementById('create').addEventListener('click', (e) => {
+    // Get API endpoint
+    const API = localStorage.getItem('mh_api') || window.API || 'http://127.0.0.1:8002';
+
+    document.getElementById('create').addEventListener('click', async (e) => {
       e.preventDefault();
       const name = document.getElementById('name').value.trim();
       const email = document.getElementById('email').value.trim();
@@ -99,21 +102,48 @@
       if (p1.length < 6) { showMessage('Password must be at least 6 characters'); return; }
       if (p1 !== p2) { showMessage('Passwords do not match'); return; }
 
-      // Demo user store
-      const raw = localStorage.getItem('users');
-      const users = raw ? JSON.parse(raw) : {};
+      // Disable button and show loading state
+      const btn = document.getElementById('create');
+      const originalText = btn.textContent;
+      btn.disabled = true;
+      btn.textContent = 'Creating account...';
 
-      // Check for duplicate username or email
-      const username = email.split('@')[0];
-      if (users[username]) { showMessage('Username already exists'); return; }
-      for (const k of Object.keys(users)){
-        if (users[k].email && users[k].email.toLowerCase() === email.toLowerCase()){ showMessage('Email already registered'); return; }
+      try {
+        // Send registration request to backend
+        const response = await fetch(`${API}/api/register`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({ name, email, password: p1 })
+        });
+
+        const data = await response.json();
+
+        if (!response.ok) {
+          showMessage(data.detail || 'Registration failed');
+          btn.disabled = false;
+          btn.textContent = originalText;
+          return;
+        }
+
+        // Show success message
+        showMessage('Account created! Please check your email to verify your account.', 'success');
+        
+        // Store email for verification page
+        localStorage.setItem('pending_verification_email', email);
+        
+        // Redirect to verification page after a delay
+        setTimeout(() => {
+          window.location.href = 'verify.html';
+        }, 2000);
+
+      } catch (error) {
+        console.error('Registration error:', error);
+        showMessage('Network error. Please check your connection and try again.');
+        btn.disabled = false;
+        btn.textContent = originalText;
       }
-
-      users[username] = { name, email, password: p1 };
-      localStorage.setItem('users', JSON.stringify(users));
-      showMessage('Account created. Redirecting to login...', 'success');
-      setTimeout(()=> window.location.href = 'login.html', 900);
     });
   </script>
 </body>
