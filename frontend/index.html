@@ -80,6 +80,10 @@
       </div>
       <div id="status" class="muted" style="margin-bottom:8px">Checking backend status…</div>
       <button id="newBtn" class="new-session">+ New chat</button>
+      
+      <input id="searchInput" type="text" placeholder="🔍 Search chats..." 
+             style="width:100%; margin:8px 0; padding:8px 12px; background:transparent; border:1px solid rgba(255,255,255,0.06); 
+                    border-radius:8px; color:var(--text); font-size:13px" />
 
       <div class="sessions">
         <ul id="sessionList" style="list-style:none; padding:0; margin:0; display:flex; flex-direction:column; gap:8px">
@@ -216,7 +220,18 @@
     sessionListEl.innerHTML='';
   if(list.length===0){ sessionListEl.innerHTML='<li class="muted">No chats yet — start a new chat</li>'; return }
     const q = (filter||'').toLowerCase();
-    for(const it of list){
+    const filtered = q ? list.filter(it => {
+      const titleMatch = (it.title||'').toLowerCase().includes(q);
+      const idMatch = (it.id||'').toLowerCase().includes(q);
+      return titleMatch || idMatch;
+    }) : list;
+    
+    if(filtered.length === 0){ 
+      sessionListEl.innerHTML='<li class="muted">No chats found matching your search</li>'; 
+      return;
+    }
+    
+    for(const it of filtered){
       const li = document.createElement('li');
       li.style.padding = '8px';
       li.style.borderRadius = '8px';
@@ -320,7 +335,21 @@
     if(localStorage.getItem('mh_session')===id){ localStorage.removeItem('mh_session'); }
   }
 
-  // searchInput removed from UI; no-op
+  // Search functionality
+  const searchInput = document.getElementById('searchInput');
+  if(searchInput){
+    searchInput.addEventListener('input', (e) => {
+      const query = e.target.value.trim();
+      renderSessions(query);
+    });
+    // Clear search on escape key
+    searchInput.addEventListener('keydown', (e) => {
+      if(e.key === 'Escape'){
+        searchInput.value = '';
+        renderSessions('');
+      }
+    });
+  }
 
   async function loadHistory() {
     if (!sessionId) return render();
