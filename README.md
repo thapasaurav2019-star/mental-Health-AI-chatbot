@@ -8,6 +8,7 @@ Repository: thapasaurav2019-star/mental-Health-AI-chatbot
 - Backend: FastAPI, SQLModel (SQLite), Uvicorn
 - LLM: OpenAI API (gpt-4o-mini by default)
 - Frontend: Vanilla HTML/JS (served statically)
+- Authentication: Email verification with token-based system
 
 ## Quick start (Windows)
 
@@ -48,12 +49,43 @@ location.reload();
 - `OPENAI_API_KEY`: your OpenAI key
 - `LLM_ONLY`: `1` to require LLM, `0` to allow fallback (dev only)
 
+### Email Verification (Optional)
+To enable email verification for new user accounts, configure these environment variables:
+- `SMTP_HOST`: SMTP server hostname (default: `smtp.gmail.com`)
+- `SMTP_PORT`: SMTP server port (default: `587`)
+- `SMTP_USER`: SMTP username (your email address)
+- `SMTP_PASSWORD`: SMTP password or app-specific password
+- `FROM_EMAIL`: Sender email address (defaults to `SMTP_USER`)
+
+**Note:** If SMTP is not configured, verification links will be logged to the console (useful for development/testing).
+
 ## Project layout
 ```
 app/            # FastAPI app
 frontend/       # Static UI
 requirements.txt
 ```
+
+## API Endpoints
+
+### Authentication
+- `POST /api/register` - Register a new user account
+  - Request: `{"name": "string", "email": "string", "password": "string"}`
+  - Sends verification email to the user
+- `POST /api/verify-email` - Verify email with token
+  - Request: `{"token": "string"}`
+- `POST /api/resend-verification` - Resend verification email
+  - Query: `?email=user@example.com`
+
+### Chat & Utilities
+- `POST /api/session` - Create a new chat session
+- `POST /api/chat` - Send a chat message
+- `GET /api/messages/{session_id}` - Get chat history
+- `POST /api/emotion` - Detect emotion from text
+- `POST /api/journal` - Add a journal entry
+- `GET /api/journal/{session_id}` - List journal entries
+- `GET /api/cbt_tips` - Get CBT tips
+- `POST /api/escalate` - Escalate to human support/hotlines
 
 ## Git & contributions
 - Local SQLite (`chat.db`) and `.env` are ignored by default
