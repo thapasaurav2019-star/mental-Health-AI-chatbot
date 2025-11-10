@@ -32,7 +32,7 @@ from app.models import ChatSession, Message, SafetyEvent, JournalEntry, User
 from app.safety import looks_like_crisis, CRISIS_RESPONSE_AU, check_moderation
 from app import tools as wellbeing_tools
 from app.email_utils import send_verification_email
-from datetime import timedelta
+from datetime import datetime, timedelta
 import secrets
 
 
@@ -288,6 +288,33 @@ def status():
     return {"using_llm": using_llm, "llm_configured": bool(USE_LLM), "llm_only": FORCE_LLM_ONLY, "message": "LLM enabled" if using_llm else "Using local fallback"}
 
 
+# -------- Pydantic request models --------
+class Turn(BaseModel):
+    role: str  # "user" | "assistant"
+    content: str
+
+
+class ChatIn(BaseModel):
+    session_id: str
+    messages: List[Turn]
+
+class EmotionIn(BaseModel):
+    text: str
+
+class JournalIn(BaseModel):
+    session_id: str
+    note: str
+    mood: str | None = None
+
+class RegisterIn(BaseModel):
+    name: str
+    email: str
+    password: str
+
+class VerifyEmailIn(BaseModel):
+    token: str
+
+
 # -------- Authentication endpoints --------
 
 @app.post("/api/register")
@@ -423,34 +450,6 @@ def resend_verification(email: str, request: Request, db: Session = Depends(get_
 
 # -------- Utility endpoints for requirements --------
 
-
-# -------- Pydantic request models --------
-class Turn(BaseModel):
-    role: str  # "user" | "assistant"
-    content: str
-
-
-class ChatIn(BaseModel):
-    session_id: str
-    messages: List[Turn]
-
-class EmotionIn(BaseModel):
-    text: str
-
-class JournalIn(BaseModel):
-    session_id: str
-    note: str
-    mood: str | None = None
-
-class RegisterIn(BaseModel):
-    name: str
-    email: str
-    password: str
-
-class VerifyEmailIn(BaseModel):
-    token: str
-
-# -------- Utility endpoints for requirements --------
 @app.post("/api/emotion")
 def detect_emotion(payload: EmotionIn):
     mood = detect_mood_from_text(payload.text)
