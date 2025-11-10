@@ -80,6 +80,10 @@
       </div>
       <div id="status" class="muted" style="margin-bottom:8px">Checking backend status…</div>
       <button id="newBtn" class="new-session">+ New chat</button>
+      
+      <input id="searchInput" type="text" placeholder="🔍 Search chats..." 
+             style="width:100%; margin:8px 0; padding:8px 12px; background:transparent; border:1px solid rgba(255,255,255,0.06); 
+                    border-radius:8px; color:var(--text); font-size:13px" />
 
       <div class="sessions">
         <ul id="sessionList" style="list-style:none; padding:0; margin:0; display:flex; flex-direction:column; gap:8px">
@@ -191,11 +195,20 @@
     }
   }
 
-  // ----- session list stored in localStorage -----
-  function getStoredSessions(){
-    try{ return JSON.parse(localStorage.getItem('mh_sessions')||'[]') }catch(e){return[]}
+  // ----- session list stored in localStorage (per user) -----
+  function getCurrentUser(){
+    return localStorage.getItem('mh_current_user') || '';
   }
-  function saveStoredSessions(s){ localStorage.setItem('mh_sessions', JSON.stringify(s)) }
+  function getStoredSessions(){
+    const user = getCurrentUser();
+    if(!user) return [];
+    try{ return JSON.parse(localStorage.getItem(`mh_sessions_${user}`)||'[]') }catch(e){return[]}
+  }
+  function saveStoredSessions(s){ 
+    const user = getCurrentUser();
+    if(!user) return;
+    localStorage.setItem(`mh_sessions_${user}`, JSON.stringify(s));
+  }
   function findStoredSession(id){ return getStoredSessions().find(x=>x.id===id); }
   function addStoredSession(id, title){
     const s = getStoredSessions();
@@ -216,7 +229,18 @@
     sessionListEl.innerHTML='';
   if(list.length===0){ sessionListEl.innerHTML='<li class="muted">No chats yet — start a new chat</li>'; return }
     const q = (filter||'').toLowerCase();
-    for(const it of list){
+    const filtered = q ? list.filter(it => {
+      const titleMatch = (it.title||'').toLowerCase().includes(q);
+      const idMatch = (it.id||'').toLowerCase().includes(q);
+      return titleMatch || idMatch;
+    }) : list;
+    
+    if(filtered.length === 0){ 
+      sessionListEl.innerHTML='<li class="muted">No chats found matching your search</li>'; 
+      return;
+    }
+    
+    for(const it of filtered){
       const li = document.createElement('li');
       li.style.padding = '8px';
       li.style.borderRadius = '8px';
@@ -320,10 +344,25 @@
     if(localStorage.getItem('mh_session')===id){ localStorage.removeItem('mh_session'); }
   }
 
-  // searchInput removed from UI; no-op
+  // Search functionality
+  const searchInput = document.getElementById('searchInput');
+  if(searchInput){
+    searchInput.addEventListener('input', (e) => {
+      const query = e.target.value.trim();
+      renderSessions(query);
+    });
+    // Clear search on escape key
+    searchInput.addEventListener('keydown', (e) => {
+      if(e.key === 'Escape'){
+        searchInput.value = '';
+        renderSessions('');
+      }
+    });
+  }
 
   async function loadHistory() {
     if (!sessionId) return render();
+    const user = getCurrentUser();
     try {
       const res = await fetch(`${API}/api/messages/${sessionId}`);
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
@@ -333,9 +372,9 @@
   // Keep placeholder 'New chat' until the first user message; avoid overwriting titles here.
     } catch (err) {
       console.error('Failed to load history', err);
-      // try offline cache first
+      // try offline cache first (user-specific)
       try{
-        const cached = JSON.parse(localStorage.getItem('mh_history_'+sessionId)||'null');
+        const cached = JSON.parse(localStorage.getItem(`mh_history_${user}_${sessionId}`)||'null');
         if(Array.isArray(cached) && cached.length){ render(cached); return }
       }catch(_e){}
       render();
@@ -369,7 +408,8 @@
     if (!msgs || msgs.length === 0) {
       msgs = [{ role: 'assistant', content: 'Hi, I’m here with you. What would be most helpful to talk about today?' }];
     }
-    try{ if(sessionId){ localStorage.setItem('mh_history_'+sessionId, JSON.stringify(msgs)); } }catch(_e){}
+    const user = getCurrentUser();
+    try{ if(sessionId && user){ localStorage.setItem(`mh_history_${user}_${sessionId}`, JSON.stringify(msgs)); } }catch(_e){}
     for (const m of msgs) {
       const div = document.createElement('div');
       div.className = `msg ${m.role === 'user' ? 'user' : 'bot'}`;
@@ -406,11 +446,12 @@
     renderSessions();
   };
 
-  // Logout handler: clear session and redirect to login
+  // Logout handler: clear session and current user, redirect to login
   const logoutBtn = document.getElementById('logoutBtn');
   if (logoutBtn) {
     logoutBtn.addEventListener('click', () => {
       localStorage.removeItem('mh_session');
+      localStorage.removeItem('mh_current_user');
       sessionId = '';
       window.location.href = 'login.html';
     });
@@ -474,6 +515,14 @@
   });
 
   (async () => {
+    // Check if user is logged in
+    const currentUser = getCurrentUser();
+    if (!currentUser) {
+      // No user logged in, redirect to login
+      window.location.href = 'login.html';
+      return;
+    }
+    
     // Detect API base before making any requests
     await detectApiBase();
     window.API = API; // expose for console override/inspection

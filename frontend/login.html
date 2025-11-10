@@ -95,6 +95,9 @@
       if (found.password !== pass) { showMessage('Wrong password'); return; }
 
       // Successful login (demo)
+      // Store the username as the current user identifier
+      const username = user.includes('@') ? user.split('@')[0] : user;
+      localStorage.setItem('mh_current_user', username);
       localStorage.setItem('mh_session', user);
       showMessage('Logged in — redirecting...', 'success');
       setTimeout(()=> window.location.href = 'index.html', 700);

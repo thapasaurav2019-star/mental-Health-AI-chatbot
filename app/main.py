@@ -28,9 +28,12 @@ from sqlmodel import select, Session
 
 from app.db import init_db, get_session
 from app.db import engine
-from app.models import ChatSession, Message, SafetyEvent, JournalEntry
+from app.models import ChatSession, Message, SafetyEvent, JournalEntry, User
 from app.safety import looks_like_crisis, CRISIS_RESPONSE_AU, check_moderation
 from app import tools as wellbeing_tools
+from app.email_utils import send_verification_email
+from datetime import datetime, timedelta
+import secrets
 
 
 # Small helper to infer a simple mood label from text so the frontend can show an emoji/label.
@@ -285,9 +288,6 @@ def status():
     return {"using_llm": using_llm, "llm_configured": bool(USE_LLM), "llm_only": FORCE_LLM_ONLY, "message": "LLM enabled" if using_llm else "Using local fallback"}
 
 
-# -------- Utility endpoints for requirements --------
-
-
 # -------- Pydantic request models --------
 class Turn(BaseModel):
     role: str  # "user" | "assistant"
@@ -306,7 +306,150 @@ class JournalIn(BaseModel):
     note: str
     mood: str | None = None
 
+class RegisterIn(BaseModel):
+    name: str
+    email: str
+    password: str
+
+class VerifyEmailIn(BaseModel):
+    token: str
+
+
+# -------- Authentication endpoints --------
+
+@app.post("/api/register")
+def register_user(payload: RegisterIn, request: Request, db: Session = Depends(get_session)):
+    """
+    Register a new user and send a verification email.
+    """
+    # Validate email format
+    email = payload.email.strip().lower()
+    if not re.match(r'^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$', email):
+        raise HTTPException(status_code=400, detail="Invalid email format")
+    
+    # Validate password length
+    if len(payload.password) < 6:
+        raise HTTPException(status_code=400, detail="Password must be at least 6 characters")
+    
+    # Generate username from email
+    username = email.split('@')[0]
+    
+    # Check if email already exists
+    existing_user = db.exec(select(User).where(User.email == email)).first()
+    if existing_user:
+        raise HTTPException(status_code=400, detail="Email already registered")
+    
+    # Check if username already exists (unlikely but possible)
+    existing_username = db.exec(select(User).where(User.username == username)).first()
+    if existing_username:
+        # Add random suffix to username
+        username = f"{username}_{secrets.token_hex(4)}"
+    
+    # Generate verification token
+    verification_token = secrets.token_urlsafe(32)
+    token_expiry = datetime.utcnow() + timedelta(hours=24)
+    
+    # Create user
+    # NOTE: In production, password should be hashed using bcrypt or similar
+    user = User(
+        name=payload.name,
+        email=email,
+        password=payload.password,  # WARNING: Storing plain text - should hash in production
+        username=username,
+        email_verified=False,
+        verification_token=verification_token,
+        verification_token_expiry=token_expiry
+    )
+    
+    db.add(user)
+    db.commit()
+    db.refresh(user)
+    
+    # Get base URL from request
+    base_url = request.headers.get("origin", "http://127.0.0.1:5500")
+    
+    # Send verification email
+    email_sent = send_verification_email(email, verification_token, base_url)
+    
+    return {
+        "message": "Registration successful. Please check your email to verify your account.",
+        "email_sent": email_sent,
+        "username": username
+    }
+
+
+@app.post("/api/verify-email")
+def verify_email(payload: VerifyEmailIn, db: Session = Depends(get_session)):
+    """
+    Verify a user's email address using the verification token.
+    """
+    token = payload.token.strip()
+    
+    # Find user with this token
+    user = db.exec(select(User).where(User.verification_token == token)).first()
+    
+    if not user:
+        raise HTTPException(status_code=400, detail="Invalid or expired verification token")
+    
+    # Check if token has expired
+    if user.verification_token_expiry and user.verification_token_expiry < datetime.utcnow():
+        raise HTTPException(status_code=400, detail="Verification token has expired")
+    
+    # Verify the user
+    user.email_verified = True
+    user.verification_token = None
+    user.verification_token_expiry = None
+    
+    db.add(user)
+    db.commit()
+    
+    return {
+        "message": "Email verified successfully. You can now log in.",
+        "email": user.email,
+        "username": user.username
+    }
+
+
+@app.post("/api/resend-verification")
+def resend_verification(email: str, request: Request, db: Session = Depends(get_session)):
+    """
+    Resend verification email to a user.
+    """
+    email = email.strip().lower()
+    
+    # Find user
+    user = db.exec(select(User).where(User.email == email)).first()
+    
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+    
+    if user.email_verified:
+        raise HTTPException(status_code=400, detail="Email already verified")
+    
+    # Generate new token
+    verification_token = secrets.token_urlsafe(32)
+    token_expiry = datetime.utcnow() + timedelta(hours=24)
+    
+    user.verification_token = verification_token
+    user.verification_token_expiry = token_expiry
+    
+    db.add(user)
+    db.commit()
+    
+    # Get base URL from request
+    base_url = request.headers.get("origin", "http://127.0.0.1:5500")
+    
+    # Send verification email
+    email_sent = send_verification_email(email, verification_token, base_url)
+    
+    return {
+        "message": "Verification email sent successfully.",
+        "email_sent": email_sent
+    }
+
+
 # -------- Utility endpoints for requirements --------
+
 @app.post("/api/emotion")
 def detect_emotion(payload: EmotionIn):
     mood = detect_mood_from_text(payload.text)
