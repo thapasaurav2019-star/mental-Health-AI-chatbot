@@ -27,13 +27,13 @@ def init_db():
                 conn.exec_driver_sql("ALTER TABLE chatsession ADD COLUMN state TEXT")
             # Ensure User table has new columns if added later (best-effort idempotent additions)
             try:
-                res3 = conn.exec_driver_sql("PRAGMA table_info('user')")
+                res3 = conn.exec_driver_sql("PRAGMA table_info('users')")
                 ucols = [r[1] for r in res3.fetchall()]
                 # If table exists but missing newer columns, add them
-                if 'is_verified' in ucols and 'verification_token' not in ucols:
-                    conn.exec_driver_sql("ALTER TABLE user ADD COLUMN verification_token TEXT")
-                if 'is_verified' in ucols and 'verification_expires' not in ucols:
-                    conn.exec_driver_sql("ALTER TABLE user ADD COLUMN verification_expires DATETIME")
+                if ucols and 'is_verified' in ucols and 'verification_token' not in ucols:
+                    conn.exec_driver_sql("ALTER TABLE users ADD COLUMN verification_token TEXT")
+                if ucols and 'is_verified' in ucols and 'verification_expires' not in ucols:
+                    conn.exec_driver_sql("ALTER TABLE users ADD COLUMN verification_expires DATETIME")
             except Exception:
                 pass
     except Exception:

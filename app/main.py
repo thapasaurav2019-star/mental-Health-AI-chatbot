@@ -265,6 +265,12 @@ app = FastAPI(title="Advanced Mental Health Chatbot", version="1.0.0")
 # Basic logging so startup clearly reports whether OpenAI is enabled (will not print keys)
 logging.basicConfig(level=logging.INFO)
 
+# Ensure database tables exist at import time as well (useful for tests without lifespan)
+try:
+    init_db()
+except Exception:
+    pass
+
 
 app.add_middleware(
     CORSMiddleware,
@@ -419,7 +425,7 @@ from email.message import EmailMessage
 from datetime import datetime, timedelta
 from passlib.context import CryptContext
 
-pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
+pwd_context = CryptContext(schemes=["pbkdf2_sha256"], deprecated="auto")
 
 
 def _hash_password(pw: str) -> str:
