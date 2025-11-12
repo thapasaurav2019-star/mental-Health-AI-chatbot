@@ -10,3 +10,6 @@ pytest
 httpx
 
 python-dotenv
+
+# Auth utilities
+passlib[bcrypt]

@@ -25,6 +25,17 @@ def init_db():
                 conn.exec_driver_sql("ALTER TABLE chatsession ADD COLUMN pending_tool TEXT")
             if 'state' not in c2:
                 conn.exec_driver_sql("ALTER TABLE chatsession ADD COLUMN state TEXT")
+            # Ensure User table has new columns if added later (best-effort idempotent additions)
+            try:
+                res3 = conn.exec_driver_sql("PRAGMA table_info('user')")
+                ucols = [r[1] for r in res3.fetchall()]
+                # If table exists but missing newer columns, add them
+                if 'is_verified' in ucols and 'verification_token' not in ucols:
+                    conn.exec_driver_sql("ALTER TABLE user ADD COLUMN verification_token TEXT")
+                if 'is_verified' in ucols and 'verification_expires' not in ucols:
+                    conn.exec_driver_sql("ALTER TABLE user ADD COLUMN verification_expires DATETIME")
+            except Exception:
+                pass
     except Exception:
         # If anything goes wrong here, ignore — the app will still run but moods won't persist until manual migration.
         pass

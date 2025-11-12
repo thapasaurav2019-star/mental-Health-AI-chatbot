@@ -18,17 +18,17 @@ try:
 except Exception:
     _SPELL = None
 
-from fastapi import FastAPI, Depends, HTTPException, Request
+from fastapi import FastAPI, Depends, HTTPException, Request, Query
 import logging
 import json
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
-from starlette.responses import JSONResponse
+from starlette.responses import JSONResponse, HTMLResponse
 from sqlmodel import select, Session
 
 from app.db import init_db, get_session
 from app.db import engine
-from app.models import ChatSession, Message, SafetyEvent, JournalEntry
+from app.models import ChatSession, Message, SafetyEvent, JournalEntry, User
 from app.safety import looks_like_crisis, CRISIS_RESPONSE_AU, check_moderation
 from app import tools as wellbeing_tools
 
@@ -306,6 +306,16 @@ class JournalIn(BaseModel):
     note: str
     mood: str | None = None
 
+# -------- Auth models --------
+class SignUpIn(BaseModel):
+    name: str
+    email: str
+    password: str
+
+class VerifyStatus(BaseModel):
+    email: str
+    is_verified: bool
+
 # -------- Utility endpoints for requirements --------
 @app.post("/api/emotion")
 def detect_emotion(payload: EmotionIn):
@@ -322,6 +332,142 @@ def get_cbt_tips(mood: str | None = None):
         if tips:
             return {"title": data.get("title"), "mood": m, "tips": tips}
     return {"title": data.get("title"), "general": data.get("general", []), "by_mood": data.get("by_mood", {})}
+
+
+# -------- Auth endpoints: signup and email verification --------
+@app.post("/api/auth/signup")
+def auth_signup(payload: SignUpIn, request: Request, db: Session = Depends(get_session)):
+    email = (payload.email or "").strip().lower()
+    name = (payload.name or "").strip()
+    password = payload.password or ""
+    if not email or "@" not in email:
+        raise HTTPException(status_code=400, detail="Valid email required")
+    if not name:
+        raise HTTPException(status_code=400, detail="Name required")
+    if len(password) < 6:
+        raise HTTPException(status_code=400, detail="Password must be at least 6 characters")
+
+    # Existing user check
+    existing = db.exec(select(User).where(User.email == email)).first()
+    if existing and existing.is_verified:
+        raise HTTPException(status_code=409, detail="Email already registered")
+
+    # Create or update unverified user
+    token = uuid.uuid4().hex
+    expires = datetime.utcnow() + timedelta(hours=24)
+    pw_hash = _hash_password(password)
+    if not existing:
+        user = User(email=email, full_name=name, password_hash=pw_hash, is_verified=False,
+                    verification_token=token, verification_expires=expires)
+        db.add(user)
+    else:
+        existing.full_name = name or existing.full_name
+        existing.password_hash = pw_hash
+        existing.is_verified = False
+        existing.verification_token = token
+        existing.verification_expires = expires
+        db.add(existing)
+    db.commit()
+
+    base = os.getenv("BACKEND_BASE_URL", f"http://{request.client.host}:{request.url.port or 8000}")
+    verify_url = f"{base}/api/auth/verify?token={token}"
+
+    subject = "Verify your email"
+    html = (
+        f"<p>Hi {name or 'there'},</p>"
+        f"<p>Please verify your email for Mental Health Chat by clicking the link below:</p>"
+        f"<p><a href='{verify_url}'>Verify my email</a></p>"
+        f"<p>This link expires in 24 hours.</p>"
+    )
+    sent = _send_email(subject, email, html, text_body=f"Open this link to verify: {verify_url}")
+    # For development convenience, include the link when SMTP is not configured
+    if not sent:
+        logging.info("Dev verify link for %s: %s", email, verify_url)
+        return {"status": "ok", "message": "Sign-up created. Check your email for verification.", "dev_link": verify_url}
+    return {"status": "ok", "message": "Sign-up created. Check your email for verification."}
+
+
+@app.get("/api/auth/verify")
+def auth_verify(token: str = Query(...), db: Session = Depends(get_session)):
+    if not token:
+        raise HTTPException(status_code=400, detail="Missing token")
+    user = db.exec(select(User).where(User.verification_token == token)).first()
+    if not user:
+        return HTMLResponse("<h2>Invalid or already used verification link.</h2>")
+    if user.verification_expires and datetime.utcnow() > user.verification_expires:
+        return HTMLResponse("<h2>Verification link has expired. Please sign up again.</h2>")
+    user.is_verified = True
+    user.verification_token = None
+    user.verification_expires = None
+    db.add(user)
+    db.commit()
+
+    front = os.getenv("FRONTEND_BASE_URL", "http://127.0.0.1:5500")
+    return HTMLResponse(
+        f"""
+        <html><body style='font-family:system-ui'>
+        <h2>Email verified ✅</h2>
+        <p>You can now <a href='{front}/login.html'>log in</a>.</p>
+        </body></html>
+        """
+    )
+
+
+# -------- Email sending helper (SMTP) --------
+import smtplib
+from email.message import EmailMessage
+from datetime import datetime, timedelta
+from passlib.context import CryptContext
+
+pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
+
+
+def _hash_password(pw: str) -> str:
+    return pwd_context.hash(pw)
+
+
+def _verify_password(pw: str, hashed: str) -> bool:
+    try:
+        return pwd_context.verify(pw, hashed)
+    except Exception:
+        return False
+
+
+def _send_email(subject: str, to_email: str, html_body: str, text_body: str | None = None) -> bool:
+    host = os.getenv("SMTP_HOST")
+    port = int(os.getenv("SMTP_PORT", "587"))
+    user = os.getenv("SMTP_USER")
+    pwd = os.getenv("SMTP_PASS")
+    use_tls = str(os.getenv("SMTP_TLS", "1")).lower() in ("1", "true", "yes", "on")
+    from_email = os.getenv("FROM_EMAIL", user or "no-reply@example.com")
+
+    if not host or not user or not pwd:
+        logging.warning("SMTP not configured; would send to %s with subject '%s'", to_email, subject)
+        return False
+
+    try:
+        msg = EmailMessage()
+        msg["Subject"] = subject
+        msg["From"] = from_email
+        msg["To"] = to_email
+        if text_body:
+            msg.set_content(text_body)
+            msg.add_alternative(html_body, subtype="html")
+        else:
+            # minimal plain text fallback as well
+            msg.set_content(html_body)
+
+        with smtplib.SMTP(host, port) as server:
+            server.ehlo()
+            if use_tls:
+                server.starttls()
+                server.ehlo()
+            server.login(user, pwd)
+            server.send_message(msg)
+        return True
+    except Exception:
+        logging.exception("Failed to send email to %s", to_email)
+        return False
 
 
 @app.post("/api/journal")

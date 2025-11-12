@@ -88,7 +88,15 @@
       el.style.color = type === 'error' ? '#ff6b6b' : '#8ef2c2';
     }
 
-    document.getElementById('create').addEventListener('click', (e) => {
+    function apiBase(){
+      // Prefer stored API override, fallback to global, then default
+      const ls = localStorage.getItem('mh_api');
+      if (ls) return ls;
+      if (window.API) return window.API;
+      return 'http://127.0.0.1:8002';
+    }
+
+    document.getElementById('create').addEventListener('click', async (e) => {
       e.preventDefault();
       const name = document.getElementById('name').value.trim();
       const email = document.getElementById('email').value.trim();
@@ -99,21 +107,28 @@
       if (p1.length < 6) { showMessage('Password must be at least 6 characters'); return; }
       if (p1 !== p2) { showMessage('Passwords do not match'); return; }
 
-      // Demo user store
-      const raw = localStorage.getItem('users');
-      const users = raw ? JSON.parse(raw) : {};
-
-      // Check for duplicate username or email
-      const username = email.split('@')[0];
-      if (users[username]) { showMessage('Username already exists'); return; }
-      for (const k of Object.keys(users)){
-        if (users[k].email && users[k].email.toLowerCase() === email.toLowerCase()){ showMessage('Email already registered'); return; }
+      try {
+        const res = await fetch(apiBase() + '/api/auth/signup', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ name, email, password: p1 })
+        });
+        const data = await res.json();
+        if (!res.ok) {
+          showMessage(data?.detail || 'Sign up failed');
+          return;
+        }
+        // In development, backend may return a dev_link if email SMTP isn't configured
+        if (data.dev_link) {
+          const el = document.getElementById('message');
+          el.innerHTML = `Verification email not sent (dev mode). Click to verify: <a class="link" href="${data.dev_link}">Verify now</a>`;
+          el.style.color = '#8ef2c2';
+          return;
+        }
+        showMessage('Account created. Check your email to verify.', 'success');
+      } catch (err) {
+        showMessage('Network error creating account');
       }
-
-      users[username] = { name, email, password: p1 };
-      localStorage.setItem('users', JSON.stringify(users));
-      showMessage('Account created. Redirecting to login...', 'success');
-      setTimeout(()=> window.location.href = 'login.html', 900);
     });
   </script>
 </body>
