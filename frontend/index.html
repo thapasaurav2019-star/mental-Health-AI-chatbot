@@ -26,6 +26,7 @@
     .brand h1{font-size:14px; margin:0}
     .new-session{margin:8px 0; background:transparent; border:1px solid rgba(124,58,237,0.18); color:var(--text); padding:8px; border-radius:8px; cursor:pointer}
     .sessions{flex:1; overflow:auto; margin-top:12px}
+  .search{width:100%; background:transparent; border:1px solid rgba(255,255,255,0.06); padding:8px 10px; border-radius:8px; color:var(--text)}
 
   .nav-item{display:flex;align-items:center;gap:10px;padding:8px;border-radius:8px;color:var(--muted);cursor:pointer}
   .nav-item:hover{background:rgba(255,255,255,0.02);color:var(--text)}
@@ -80,6 +81,7 @@
       </div>
       <div id="status" class="muted" style="margin-bottom:8px">Checking backend status…</div>
       <button id="newBtn" class="new-session">+ New chat</button>
+      <input id="searchChats" class="search" type="text" placeholder="Search chats…" aria-label="Search chats" />
 
       <div class="sessions">
         <ul id="sessionList" style="list-style:none; padding:0; margin:0; display:flex; flex-direction:column; gap:8px">
@@ -197,6 +199,11 @@
   }
   function saveStoredSessions(s){ localStorage.setItem('mh_sessions', JSON.stringify(s)) }
   function findStoredSession(id){ return getStoredSessions().find(x=>x.id===id); }
+  function currentFilter(){
+    const el = document.getElementById('searchChats');
+    return el ? el.value.trim() : '';
+  }
+
   function addStoredSession(id, title){
     const s = getStoredSessions();
     // remove existing with same id
@@ -204,19 +211,24 @@
     const now = new Date().toISOString();
     filtered.unshift({id, title: title||id, updated: now});
     saveStoredSessions(filtered.slice(0,50));
-    renderSessions();
+    renderSessions(currentFilter());
   }
   function updateStoredSessionTitle(id, title){
     const s = getStoredSessions();
     const idx = s.findIndex(x=>x.id===id);
-    if(idx>=0){ s[idx].title = title; s[idx].updated = new Date().toISOString(); saveStoredSessions(s); renderSessions(); }
+    if(idx>=0){ s[idx].title = title; s[idx].updated = new Date().toISOString(); saveStoredSessions(s); renderSessions(currentFilter()); }
   }
   function renderSessions(filter=''){
     const list = getStoredSessions();
     sessionListEl.innerHTML='';
-  if(list.length===0){ sessionListEl.innerHTML='<li class="muted">No chats yet — start a new chat</li>'; return }
+    if(list.length===0){ sessionListEl.innerHTML='<li class="muted">No chats yet — start a new chat</li>'; return }
     const q = (filter||'').toLowerCase();
+    let added = 0;
     for(const it of list){
+      const titleText = (it.title||'').toLowerCase();
+      const idText = (it.id||'').toLowerCase();
+      const matches = !q || titleText.includes(q) || idText.includes(q);
+      if(!matches) continue;
       const li = document.createElement('li');
       li.style.padding = '8px';
       li.style.borderRadius = '8px';
@@ -282,10 +294,12 @@
       li.appendChild(menu);
 
       sessionListEl.appendChild(li);
+      added++;
     }
+    if(added===0){ sessionListEl.innerHTML='<li class="muted">No matching chats</li>'; }
   }
 
-  function loadSession(id){ sessionId = id; localStorage.setItem('mh_session', id); setSidInURL(id); renderSessions(); loadHistory(); }
+  function loadSession(id){ sessionId = id; localStorage.setItem('mh_session', id); setSidInURL(id); renderSessions(currentFilter()); loadHistory(); }
 
   function closeAllKebabMenus(){
     document.querySelectorAll('.kebab-menu.open').forEach(el=> el.classList.remove('open'));
@@ -309,7 +323,7 @@
       if(list.length>0){ loadSession(list[0].id); }
       else{ (async()=>{ sessionId=''; await ensureSession(); await loadHistory(); })(); }
     } else {
-      renderSessions();
+      renderSessions(currentFilter());
     }
   }
 
@@ -403,7 +417,7 @@
     sessionId = '';
     await ensureSession();
     await loadHistory();
-    renderSessions();
+    renderSessions(currentFilter());
   };
 
   // Logout handler: clear session and redirect to login
@@ -490,8 +504,15 @@
     setSidInURL(sessionId);
     await loadHistory();
     await fetchStatus();
-    renderSessions();
+    renderSessions(currentFilter());
   })();
+  // Search field -> filter sessions in real time
+  const searchEl = document.getElementById('searchChats');
+  if(searchEl){
+    searchEl.addEventListener('input', ()=>{
+      renderSessions(searchEl.value.trim());
+    });
+  }
 
   // offline banner hooks removed
 
