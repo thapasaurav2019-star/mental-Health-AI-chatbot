@@ -13,3 +13,6 @@ python-dotenv
 
 # Auth utilities
 passlib[bcrypt]
+
+# JWT / token handling
+python-jose[cryptography]==3.3.0

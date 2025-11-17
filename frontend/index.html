@@ -106,26 +106,66 @@
 
   <script>
   // Minimal client for the backend API. No top-level await used.
-  // Detect the API base automatically: same-origin (if served via http), 8002, then 8011. window.API can override.
+  // Detect the API base automatically: prefer existing override if reachable; otherwise probe common dev ports.
   let API = window.API || localStorage.getItem('mh_api') || '';
+  const TOKEN = () => (localStorage.getItem('mh_token')||'');
+  const AUTH = () => (TOKEN()? { 'Authorization': 'Bearer ' + TOKEN() } : {});
+  const IS_AUTH = () => !!TOKEN();
+  const USER_ID = () => (localStorage.getItem('mh_user_id')||'');
   async function detectApiBase(){
-    if(API) return API;
+    // 1) If an override exists, verify it works; if not, drop it and continue detection.
+    if (API) {
+      try{
+        const ctrl = new AbortController();
+        const timer = setTimeout(()=>ctrl.abort(), 1200);
+        const res = await fetch(`${API}/api/status`, { signal: ctrl.signal });
+        clearTimeout(timer);
+        if(res.ok){ return API; }
+      }catch(_e){ /* fall through to probing */ }
+      try{ localStorage.removeItem('mh_api'); }catch(_e){}
+      API = '';
+    }
+    // 2) Build candidate list
     const candidates = [];
     try{ if(location.origin && /^https?:/i.test(location.origin)) candidates.push(location.origin); }catch(_e){}
-    candidates.push('http://127.0.0.1:8002','http://127.0.0.1:8011');
+    candidates.push(
+      'http://127.0.0.1:8000',
+      'http://localhost:8000',
+      'http://0.0.0.0:8000',
+      'http://127.0.0.1:8002',
+      'http://127.0.0.1:8011'
+    );
+    // 3) Probe each candidate quickly
     for(const base of candidates){
       try{
         const ctrl = new AbortController();
         const timer = setTimeout(()=>ctrl.abort(), 1200);
         const res = await fetch(`${base}/api/status`, { signal: ctrl.signal });
         clearTimeout(timer);
-        if(res.ok){ API = base; localStorage.setItem('mh_api', API); return API; }
+        if(res.ok){ API = base; try{ localStorage.setItem('mh_api', API); }catch(_e){} return API; }
       }catch(_e){}
     }
-    // Fallback so the UI still works offline; real calls will fail but offline responder may kick in.
-    API = 'http://127.0.0.1:8002';
+    // 4) Fallback to default dev port; persist so user can inspect/edit later.
+    API = 'http://127.0.0.1:8000';
+    try{ localStorage.setItem('mh_api', API); }catch(_e){}
+    console.warn('[mh] API auto-detect fallback to', API);
     return API;
   }
+
+  // --- Per-account localStorage namespace helpers ---
+  // We namespace all keys by the current user so each account sees only their own chats.
+  // If no user is set (not logged in), we fall back to a shared "guest" namespace.
+  function currentUser(){
+    try{
+      const v = (localStorage.getItem('mh_user')||'').trim().toLowerCase();
+      return v || 'guest';
+    }catch(_e){ return 'guest'; }
+  }
+  function nsKey(key){ return `mh_${currentUser()}_${key}`; }
+  function lsGet(key){ try{ return localStorage.getItem(nsKey(key)); }catch(_e){ return null; } }
+  function lsSet(key, val){ try{ localStorage.setItem(nsKey(key), val); }catch(_e){} }
+  function lsRemove(key){ try{ localStorage.removeItem(nsKey(key)); }catch(_e){} }
+  function nsHistoryKey(id){ return nsKey(`history_${id}`); }
 
   const sessionEl = document.getElementById('sessionEl'); // may be null now
   const chatEl = document.getElementById('chat');
@@ -135,7 +175,7 @@
   const input = document.getElementById('input');
   // offline banner removed per request
 
-  let sessionId = localStorage.getItem('mh_session') || '';
+  let sessionId = lsGet('session') || '';
 
   // --- Deep link support: #sid=<sessionId> ---
   function getSidFromURL(){
@@ -171,11 +211,24 @@
       if(!exists){ addStoredSession(sessionId, 'New chat'); }
       return sessionId;
     }
+    // If authenticated, create a server-side chat and use its id
+    if (IS_AUTH()){
+      try{
+        const res = await fetch(`${API}/api/v2/chats`, { method:'POST', headers:{ 'Content-Type':'application/json', ...AUTH() }, body: JSON.stringify({}) });
+        if(!res.ok) throw new Error('bad status');
+        const data = await res.json();
+        sessionId = String(data.id);
+        lsSet('session', sessionId);
+        addStoredSession(sessionId, data.title || 'New chat');
+        if (sessionEl) sessionEl.value = sessionId;
+        return sessionId;
+      }catch(err){ console.error('Failed to create v2 chat', err); }
+    }
     try {
       const res = await fetch(`${API}/api/session`, { method: 'POST' });
       const data = await res.json();
   sessionId = data.session_id;
-  localStorage.setItem('mh_session', sessionId);
+  lsSet('session', sessionId);
   // create a session placeholder titled "New chat"; we'll rename after first user message
   addStoredSession(sessionId, 'New chat');
       if (sessionEl) sessionEl.value = sessionId;
@@ -186,7 +239,7 @@
       // Offline fallback: create a local session id so user can still chat and see it in the sidebar
       const localId = 'local-' + (self.crypto && crypto.randomUUID ? crypto.randomUUID() : Math.random().toString(36).slice(2));
       sessionId = localId;
-      localStorage.setItem('mh_session', localId);
+      lsSet('session', localId);
       addStoredSession(localId, 'New chat');
       if (sessionEl) sessionEl.value = localId;
       return localId;
@@ -195,9 +248,9 @@
 
   // ----- session list stored in localStorage -----
   function getStoredSessions(){
-    try{ return JSON.parse(localStorage.getItem('mh_sessions')||'[]') }catch(e){return[]}
+    try{ return JSON.parse(localStorage.getItem(nsKey('sessions'))||'[]') }catch(e){return[]}
   }
-  function saveStoredSessions(s){ localStorage.setItem('mh_sessions', JSON.stringify(s)) }
+  function saveStoredSessions(s){ localStorage.setItem(nsKey('sessions'), JSON.stringify(s)) }
   function findStoredSession(id){ return getStoredSessions().find(x=>x.id===id); }
   function currentFilter(){
     const el = document.getElementById('searchChats');
@@ -299,7 +352,7 @@
     if(added===0){ sessionListEl.innerHTML='<li class="muted">No matching chats</li>'; }
   }
 
-  function loadSession(id){ sessionId = id; localStorage.setItem('mh_session', id); setSidInURL(id); renderSessions(currentFilter()); loadHistory(); }
+  function loadSession(id){ sessionId = id; lsSet('session', id); setSidInURL(id); renderSessions(currentFilter()); loadHistory(); }
 
   function closeAllKebabMenus(){
     document.querySelectorAll('.kebab-menu.open').forEach(el=> el.classList.remove('open'));
@@ -311,11 +364,17 @@
     title = title.trim();
     if(!title) return;
     updateStoredSessionTitle(id, title);
+    if (IS_AUTH()){
+      (async ()=>{ try{ await fetch(`${API}/api/v2/chats/${id}/title`, { method:'PATCH', headers:{ 'Content-Type':'application/json', ...AUTH() }, body: JSON.stringify({ title }) }); }catch(_e){} })();
+    }
   }
 
   function confirmDelete(id){
-    const ok = confirm('Delete this chat? This will remove it from your sidebar.');
+    const ok = confirm('Delete this chat?');
     if(!ok) return;
+    if (IS_AUTH()){
+      (async ()=>{ try{ await fetch(`${API}/api/v2/chats/${id}`, { method:'DELETE', headers: { ...AUTH() }}); }catch(_e){} })();
+    }
     removeStoredSession(id);
     // If the current session was deleted, switch to another one or create new
     const list = getStoredSessions();
@@ -331,7 +390,7 @@
     const s = getStoredSessions();
     const filtered = s.filter(x=>x.id!==id);
     saveStoredSessions(filtered);
-    if(localStorage.getItem('mh_session')===id){ localStorage.removeItem('mh_session'); }
+    if(lsGet('session')===id){ lsRemove('session'); }
   }
 
   // searchInput removed from UI; no-op
@@ -339,7 +398,8 @@
   async function loadHistory() {
     if (!sessionId) return render();
     try {
-      const res = await fetch(`${API}/api/messages/${sessionId}`);
+      const url = IS_AUTH()? `${API}/api/v2/messages/${sessionId}` : `${API}/api/messages/${sessionId}`;
+      const res = await fetch(url, { headers: { ...AUTH() }});
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
   const msgs = await res.json();
   const mapped = msgs.map(m => ({ role: m.role, content: m.content, mood: m.mood }));
@@ -349,7 +409,7 @@
       console.error('Failed to load history', err);
       // try offline cache first
       try{
-        const cached = JSON.parse(localStorage.getItem('mh_history_'+sessionId)||'null');
+        const cached = JSON.parse(localStorage.getItem(nsHistoryKey(sessionId))||'null');
         if(Array.isArray(cached) && cached.length){ render(cached); return }
       }catch(_e){}
       render();
@@ -373,7 +433,18 @@
   return true;
     } catch (err) {
       console.error('Failed to fetch status', err);
-  if (sEl) sEl.textContent = 'Status unavailable';
+  if (sEl) {
+    sEl.innerHTML = `Status unavailable — <a href="#" id="resetApiLink" style="color:#7c3aed">Reset API</a>`;
+    const link = document.getElementById('resetApiLink');
+    if(link){
+      link.addEventListener('click', (e)=>{
+        e.preventDefault();
+        try{ localStorage.removeItem('mh_api'); }catch(_e){}
+        API='';
+        (async()=>{ await detectApiBase(); sEl.textContent = 'Retrying…'; await fetchStatus(); })();
+      });
+    }
+  }
       return false;
     }
   }
@@ -383,7 +454,7 @@
     if (!msgs || msgs.length === 0) {
       msgs = [{ role: 'assistant', content: 'Hi, I’m here with you. What would be most helpful to talk about today?' }];
     }
-    try{ if(sessionId){ localStorage.setItem('mh_history_'+sessionId, JSON.stringify(msgs)); } }catch(_e){}
+  try{ if(sessionId){ localStorage.setItem(nsHistoryKey(sessionId), JSON.stringify(msgs)); } }catch(_e){}
     for (const m of msgs) {
       const div = document.createElement('div');
       div.className = `msg ${m.role === 'user' ? 'user' : 'bot'}`;
@@ -413,7 +484,7 @@
 
   newBtn.onclick = async () => {
     // create and switch to a fresh session
-    localStorage.removeItem('mh_session');
+    lsRemove('session');
     sessionId = '';
     await ensureSession();
     await loadHistory();
@@ -424,7 +495,10 @@
   const logoutBtn = document.getElementById('logoutBtn');
   if (logoutBtn) {
     logoutBtn.addEventListener('click', () => {
-      localStorage.removeItem('mh_session');
+      lsRemove('session');
+      try{ localStorage.removeItem('mh_user'); }catch(_e){}
+      try{ localStorage.removeItem('mh_token'); }catch(_e){}
+      try{ localStorage.removeItem('mh_user_id'); }catch(_e){}
       sessionId = '';
       window.location.href = 'login.html';
     });
@@ -458,11 +532,16 @@
       typing.remove();
   bubbles.push({ role: 'assistant', content: data.reply, mood: data.mood });
       render(bubbles);
-      // After first exchange, label the chat if still 'New chat'
+      // If authenticated, persist this exchange to the account-bound store
+      if (IS_AUTH()){
+        try{ await fetch(`${API}/api/v2/messages`, { method:'POST', headers:{ 'Content-Type':'application/json', ...AUTH() }, body: JSON.stringify({ chat_id: Number(sessionId), role: 'user', content: text }) }); }catch(_e){}
+        try{ await fetch(`${API}/api/v2/messages`, { method:'POST', headers:{ 'Content-Type':'application/json', ...AUTH() }, body: JSON.stringify({ chat_id: Number(sessionId), role: 'assistant', content: data.reply }) }); }catch(_e){}
+      }
+      // After first exchange, if no title yet schedule async generation via backend
       try{
         const sess = findStoredSession(sessionId);
-        if(sess && (sess.title === 'New chat' || !sess.title || sess.title === sessionId)){
-          updateStoredSessionTitle(sessionId, text.slice(0,60));
+        if(sess && (!sess.title || sess.title === 'New chat' || sess.title === sessionId)){
+          generateChatTitle(text).then(async (t)=>{ if(t){ updateStoredSessionTitle(sessionId, t); if(IS_AUTH()){ try{ await fetch(`${API}/api/v2/chats/${sessionId}/title`, { method:'PATCH', headers:{ 'Content-Type':'application/json', ...AUTH() }, body: JSON.stringify({ title: t }) }); }catch(_e){} } }});
         }
       }catch(_e){}
     } catch (err) {
@@ -477,11 +556,12 @@
         bubbles.push({ role: 'assistant', content: reply, mood: 'neutral' });
       }
       render(bubbles);
-      // Also rename after first exchange even when offline
+      // Also attempt title generation offline (fallback to first 3 words)
       try{
         const sess = findStoredSession(sessionId);
-        if(sess && (sess.title === 'New chat' || !sess.title || sess.title === sessionId)){
-          updateStoredSessionTitle(sessionId, text.slice(0,60));
+        if(sess && (!sess.title || sess.title === 'New chat' || sess.title === sessionId)){
+          const fallback = text.replace(/["'`.,!?;:()_-]/g,'').split(/\s+/).slice(0,4).join(' ').toLowerCase();
+          updateStoredSessionTitle(sessionId, fallback);
         }
       }catch(_e){}
     }
@@ -495,15 +575,27 @@
     const urlSid = getSidFromURL();
     if(urlSid){
       sessionId = urlSid;
-      localStorage.setItem('mh_session', urlSid);
+      lsSet('session', urlSid);
       // ensure appears in sidebar if missing
       const exists = getStoredSessions().some(x=>x.id===urlSid);
       if(!exists) addStoredSession(urlSid, 'New chat');
     }
+    await fetchStatus();
+    // If authenticated, seed sidebar with server chats
+    if (IS_AUTH()){
+      try{
+        const res = await fetch(`${API}/api/v2/chats`, { headers: { ...AUTH() }});
+        if(res.ok){
+          const arr = await res.json();
+          const mapped = arr.map(c=>({ id: String(c.id), title: c.title || 'New chat', updated: c.created_at }));
+          localStorage.setItem(nsKey('sessions'), JSON.stringify(mapped));
+          if (!sessionId && arr.length){ sessionId = String(arr[0].id); lsSet('session', sessionId); }
+        }
+      }catch(_e){}
+    }
     await ensureSession();
     setSidInURL(sessionId);
     await loadHistory();
-    await fetchStatus();
     renderSessions(currentFilter());
   })();
   // Search field -> filter sessions in real time
@@ -523,6 +615,27 @@
     }
   });
   // --- Simple local offline responder (very lightweight heuristic) ---
+  async function generateChatTitle(firstMessage){
+    const cleaned = (firstMessage||'').trim();
+    if(!cleaned) return '';
+    try{
+      const res = await fetch(`${API}/api/title`, {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({session_id: sessionId, first_message: cleaned})});
+      if(!res.ok) throw new Error('bad status');
+      const data = await res.json();
+      let title = (data.title||'').trim();
+      // Validate length and word count
+      title = title.replace(/["'`.,!?;:()_-]/g,'').trim();
+      const words = title.split(/\s+/).filter(Boolean);
+      if(words.length === 0 || words.length > 4){
+        // fallback to first 4 words of user message
+        return cleaned.replace(/["'`.,!?;:()_-]/g,'').split(/\s+/).slice(0,4).join(' ').toLowerCase();
+      }
+      return words.join(' ').toLowerCase();
+    }catch(err){
+      // fallback
+      return cleaned.replace(/["'`.,!?;:()_-]/g,'').split(/\s+/).slice(0,4).join(' ').toLowerCase();
+    }
+  }
   let _lastOfflineKind = '';
   function localOfflineReply(userText){
     const t = (userText||'').toLowerCase();

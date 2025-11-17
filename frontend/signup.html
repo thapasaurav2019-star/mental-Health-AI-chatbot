@@ -88,12 +88,30 @@
       el.style.color = type === 'error' ? '#ff6b6b' : '#8ef2c2';
     }
 
-    function apiBase(){
-      // Prefer stored API override, fallback to global, then default
+    async function detectApiBase(){
+      // 1) If there's a stored override, validate it
       const ls = localStorage.getItem('mh_api');
-      if (ls) return ls;
-      if (window.API) return window.API;
-      return 'http://127.0.0.1:8002';
+      const tryList = [];
+      if (ls) tryList.push(ls);
+      if (window.API) tryList.push(window.API);
+      // 2) Common local ports to probe
+      const probes = [
+        'http://127.0.0.1:8000', 'http://localhost:8000',
+        'http://127.0.0.1:8002', 'http://localhost:8002',
+        'http://127.0.0.1:8011', 'http://localhost:8011'
+      ];
+      for (const p of probes) if (!tryList.includes(p)) tryList.push(p);
+
+      for (const base of tryList){
+        try {
+          const r = await fetch(base + '/api/status', { method: 'GET' });
+          if (r.ok) {
+            try { localStorage.setItem('mh_api', base); } catch(_) {}
+            return base;
+          }
+        } catch { /* keep trying */ }
+      }
+      return null;
     }
 
     document.getElementById('create').addEventListener('click', async (e) => {
@@ -108,7 +126,12 @@
       if (p1 !== p2) { showMessage('Passwords do not match'); return; }
 
       try {
-        const res = await fetch(apiBase() + '/api/auth/signup', {
+        const base = await detectApiBase();
+        if (!base){
+          showMessage('API not reachable. Is the server running on 127.0.0.1:8000 or 8002?');
+          return;
+        }
+        const res = await fetch(base + '/api/auth/signup', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ name, email, password: p1 })
@@ -120,11 +143,14 @@
         }
         // In development, backend may return a dev_link if email SMTP isn't configured
         if (data.dev_link) {
+          // Save detected API base for subsequent pages
+          try { localStorage.setItem('mh_api', base); } catch(_) {}
           const el = document.getElementById('message');
           el.innerHTML = `Verification email not sent (dev mode). Click to verify: <a class="link" href="${data.dev_link}">Verify now</a>`;
           el.style.color = '#8ef2c2';
           return;
         }
+        try { localStorage.setItem('mh_api', base); } catch(_) {}
         showMessage('Account created. Check your email to verify.', 'success');
       } catch (err) {
         showMessage('Network error creating account');

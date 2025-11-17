@@ -70,35 +70,76 @@
       el.style.color = type === 'error' ? '#ff6b6b' : '#8ef2c2';
     }
 
-    document.getElementById('submit').addEventListener('click', (e) => {
+    function apiBase(){
+      const ls = localStorage.getItem('mh_api');
+      if (ls) return ls;
+      if (window.API) return window.API;
+      return 'http://127.0.0.1:8000';
+    }
+
+    document.getElementById('submit').addEventListener('click', async (e) => {
       e.preventDefault();
       const user = document.getElementById('user').value.trim();
       const pass = document.getElementById('password').value;
       if (!user) { showMessage('Please enter your email or username'); return; }
       if (!pass) { showMessage('Please enter your password'); return; }
 
+      // Try backend login first
+      try {
+        const base = apiBase();
+        const res = await fetch(base + '/api/auth/login', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ user, password: pass })
+        });
+        const data = await res.json().catch(()=>({}));
+        if (res.ok) {
+          try { localStorage.setItem('mh_api', base); } catch(_) {}
+          const identity = (data?.email || user || '').toLowerCase();
+          localStorage.setItem('mh_user', identity);
+          if (data?.token) {
+            localStorage.setItem('mh_token', data.token);
+          }
+          if (data?.id) {
+            localStorage.setItem('mh_user_id', String(data.id));
+          }
+          showMessage('Logged in — redirecting...', 'success');
+          setTimeout(()=> window.location.href = 'index.html', 600);
+          return;
+        }
+        // Show backend error details when available
+        const det = data?.detail || (res.status === 404 ? 'Username or email not found' : 'Login failed');
+        showMessage(det);
+        // If the endpoint isn't available (e.g., older backend), fall back to localStorage demo login
+        if ((data?.detail || '').toLowerCase() === 'not found' || res.status === 404) {
+          fallbackLocalLogin(user, pass);
+        }
+      } catch (err) {
+        // Network failure: try local fallback
+        fallbackLocalLogin(user, pass);
+      }
+    });
+
+    function fallbackLocalLogin(user, pass){
       // Demo user store in localStorage: users is an object keyed by email or username
       const raw = localStorage.getItem('users');
       const users = raw ? JSON.parse(raw) : {};
-
-      // Try lookup by exact key (username) or by email field inside each user
       let found = null;
       if (users[user]) found = users[user];
       else {
-        // search by email
         for (const k of Object.keys(users)){
           if (users[k].email && users[k].email.toLowerCase() === user.toLowerCase()) { found = users[k]; break; }
         }
       }
-
       if (!found) { showMessage('Username or email not found'); return; }
       if (found.password !== pass) { showMessage('Wrong password'); return; }
-
-      // Successful login (demo)
-      localStorage.setItem('mh_session', user);
+      const identity = (found.email || user || '').toLowerCase();
+      localStorage.setItem('mh_user', identity);
+      // Clear any stale tokens in demo mode
+      try { localStorage.removeItem('mh_token'); localStorage.removeItem('mh_user_id'); } catch(_) {}
       showMessage('Logged in — redirecting...', 'success');
-      setTimeout(()=> window.location.href = 'index.html', 700);
-    });
+      setTimeout(()=> window.location.href = 'index.html', 600);
+    }
 
     // Navigate to signup page
     const createBtn = document.getElementById('createAccount');

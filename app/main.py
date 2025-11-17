@@ -1,4 +1,5 @@
 # app/main.py
+from __future__ import annotations
 import os
 # Load environment variables from a local .env file if present (non-fatal if missing)
 try:
@@ -28,9 +29,20 @@ from sqlmodel import select, Session
 
 from app.db import init_db, get_session
 from app.db import engine
-from app.models import ChatSession, Message, SafetyEvent, JournalEntry, User
-from app.safety import looks_like_crisis, CRISIS_RESPONSE_AU, check_moderation
+from app.models import ChatSession, Message, SafetyEvent, JournalEntry, User, Chat, ChatMessage
+from app.safety import (
+    looks_like_crisis,
+    CRISIS_RESPONSE_AU,
+    check_moderation,
+    looks_like_panic,
+    grounding_mode_reply,
+    looks_like_trauma,
+    trauma_mode_reply,
+)
 from app import tools as wellbeing_tools
+from app.services.email_service import send_verification_email
+from app.utils.generate_token import generate_verification_token, hash_token
+from jose import jwt, JWTError  # python-jose dependency  # type: ignore
 
 
 # Small helper to infer a simple mood label from text so the frontend can show an emoji/label.
@@ -58,6 +70,113 @@ def detect_mood_from_text(text: str) -> str:
     if re.search(r"\b(you can|you've got this|you got this|breathe|it's okay|it's ok)\b", t):
         return "encouraging"
     return "neutral"
+
+
+# --- Expanded Emotion Detection and Emoji Rules ---
+EMOTIONS = [
+    "happy_excited",
+    "calm_neutral",
+    "curious_thoughtful",
+    "playful_light",
+    "sad_hurt",
+    "lonely",
+    "worried_anxious",
+    "angry_frustrated",
+    "embarrassed_ashamed",
+    "overwhelmed_stressed",
+    "panic_fear",
+    "trauma_dissociation",
+    "confused_lost",
+    "grateful_appreciative",
+    "hopeful_encouraged",
+]
+
+def get_emotion(text: str) -> str:
+    t = (text or "").lower()
+    # panic/fear first (strongest)
+    if re.search(r"\b(can'?t\s*breathe|short\s*of\s*breath|racing\s*heart|panic|panic attack|feel like i'm going to die|gonna die|faint|dizzy|lightheaded)\b", t):
+        return "panic_fear"
+    # trauma-triggered
+    if re.search(r"\b(flashback|triggered?|dissociat|numb|unreal|detached|spaced? out)\b", t):
+        return "trauma_dissociation"
+    # overwhelmed/stressed
+    if re.search(r"\b(overwhelmed|too much|stressed|burnt? out|exhausted|pressure)\b", t):
+        return "overwhelmed_stressed"
+    # worried/anxious
+    if re.search(r"\b(anxious|anxiety|worr(?:y|ied)|nervous|scared|fearful)\b", t):
+        return "worried_anxious"
+    # sad/hurt/lonely
+    if re.search(r"\b(sad|down|miserable|hurt|heartbroken|cry|crying)\b", t):
+        return "sad_hurt"
+    if re.search(r"\b(lonely|alone|isolated)\b", t):
+        return "lonely"
+    # angry/frustrated
+    if re.search(r"\b(angry|mad|furious|pissed|annoyed|frustrat(?:e|ed|ing))\b", t):
+        return "angry_frustrated"
+    # embarrassed/ashamed
+    if re.search(r"\b(embarrass(?:ed|ing)|ashamed|shame|humiliated)\b", t):
+        return "embarrassed_ashamed"
+    # curious/thoughtful
+    if re.search(r"\b(why|how|what|could|should|explain|tell me|curious|wonder)\b", t):
+        return "curious_thoughtful"
+    # confused/lost
+    if re.search(r"\b(confused|lost|don'?t\s*know|unsure|uncertain)\b", t):
+        return "confused_lost"
+    # happy/excited/grateful/hopeful/playful
+    if re.search(r"\b(excited|stoked|thrilled|so happy|great news)\b", t):
+        return "happy_excited"
+    if re.search(r"\b(grateful|thank(?:s| you)|appreciat(?:e|ion))\b", t):
+        return "grateful_appreciative"
+    if re.search(r"\b(hopeful|encouraged|optimistic)\b", t):
+        return "hopeful_encouraged"
+    if re.search(r"\b(play|playful|lol|lmao|haha|fun|joke|banter)\b", t):
+        return "playful_light"
+    if re.search(r"\b(calm|okay|alright|fine)\b", t):
+        return "calm_neutral"
+    # default
+    return "calm_neutral"
+
+EMOJI_MAP: dict[str, list[str]] = {
+    "happy_excited": ["😊", "😄", "✨", "🌟", "🤗"],
+    "playful_light": ["😄", "😉", "🤭"],
+    "curious_thoughtful": ["🤔", "🧐"],
+    "calm_neutral": ["🙂", "🌿"],
+    "sad_hurt": ["😔", "🥺"],
+    "lonely": ["💛", "🫂"],
+    "worried_anxious": ["😟", "😥"],
+    "angry_frustrated": ["😞", "😤"],
+    "embarrassed_ashamed": ["😳", "🙈"],
+    "overwhelmed_stressed": ["😣", "😓"],
+    "panic_fear": ["😟", "🫂"],
+    "trauma_dissociation": ["🫂", "💛"],
+    "confused_lost": ["🤔"],
+    "grateful_appreciative": ["🙏", "💛"],
+    "hopeful_encouraged": ["🌱", "✨", "🙂"],
+}
+
+def apply_emoji(text: str, emotion: str, serious: bool = False) -> str:
+    """Place at most one emoji at start or end. Never mid-sentence. Avoid loud emojis in serious contexts.
+    If text already has an emoji, return as-is.
+    """
+    if not text:
+        return text
+    # If content already contains emoji, do not add another
+    if re.search(r"[\U0001F300-\U0001FAFF]", text):
+        return text
+    choices = EMOJI_MAP.get(emotion, [])
+    if not choices:
+        return text
+    # For serious contexts (crisis/trauma/panic/overwhelmed/angry/sad), keep to soft set
+    if serious or emotion in {"panic_fear", "trauma_dissociation", "overwhelmed_stressed", "sad_hurt", "angry_frustrated", "worried_anxious"}:
+        soft = [e for e in choices if e in {"🫂", "💛", "😟", "🙂", "😔", "😥", "😞", "😣", "😓"}]
+        if soft:
+            choices = soft
+    emoji = random.choice(choices)
+    # Decide placement: start or end
+    place_start = True if serious else random.choice([True, False])
+    if place_start:
+        return f"{emoji} {text}".strip()
+    return f"{text} {emoji}".strip()
 
 
 def _is_gibberish(text: str) -> bool:
@@ -260,10 +379,52 @@ except Exception:
     USE_LLM = False
     client = None
 
+from fastapi.staticfiles import StaticFiles
+from pathlib import Path
+
 app = FastAPI(title="Advanced Mental Health Chatbot", version="1.0.0")
+
+# --- Serve frontend static files directly from this FastAPI app ---
+# This removes the need to run a separate `python -m http.server` on port 5500.
+# After this mount, you can open: http://127.0.0.1:8000/frontend/index.html
+# We mount with html=True so directory index resolution (index.html) works when hitting /frontend/.
+FRONTEND_DIR = Path(__file__).parent.parent / "frontend"
+if FRONTEND_DIR.exists():
+    app.mount("/frontend", StaticFiles(directory=str(FRONTEND_DIR), html=True), name="frontend")
+else:
+    logging.warning("Frontend directory not found at %s; static mount skipped", FRONTEND_DIR)
 
 # Basic logging so startup clearly reports whether OpenAI is enabled (will not print keys)
 logging.basicConfig(level=logging.INFO)
+
+# --- JWT settings ---
+JWT_SECRET = os.getenv("JWT_SECRET", "dev-secret-change-me")
+JWT_ALGO = os.getenv("JWT_ALGO", "HS256")
+
+def create_access_token(user: User, minutes: int = 60*24*7) -> str:
+    payload = {
+        "sub": str(user.id),
+        "email": user.email,
+        "exp": int((datetime.utcnow() + timedelta(minutes=minutes)).timestamp()),
+    }
+    return jwt.encode(payload, JWT_SECRET, algorithm=JWT_ALGO)
+
+def get_current_user(request: Request, db: Session = Depends(get_session)) -> User:
+    auth = request.headers.get("Authorization", "")
+    token = None
+    if auth.lower().startswith("bearer "):
+        token = auth.split(" ", 1)[1].strip()
+    if not token:
+        raise HTTPException(status_code=401, detail="Missing token")
+    try:
+        data = jwt.decode(token, JWT_SECRET, algorithms=[JWT_ALGO])
+        uid = int(data.get("sub"))
+    except JWTError:
+        raise HTTPException(status_code=401, detail="Invalid token")
+    user = db.exec(select(User).where(User.id == uid)).first()
+    if not user:
+        raise HTTPException(status_code=401, detail="User not found")
+    return user
 
 # Ensure database tables exist at import time as well (useful for tests without lifespan)
 try:
@@ -279,6 +440,89 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# -------- V2 Account-bound Chat Endpoints (JWT protected) --------
+# Request models (placed before endpoint functions to avoid forward-reference evaluation issues)
+class CreateChatIn(BaseModel):
+    title: str | None = None
+
+class SaveMessageIn(BaseModel):
+    chat_id: int
+    role: str
+    content: str
+@app.post("/api/v2/chats")
+def v2_create_chat(payload: CreateChatIn | None = None, user: User = Depends(get_current_user), db: Session = Depends(get_session)):
+    title = (payload.title if payload else None) or None
+    chat = Chat(user_id=user.id, title=title)
+    db.add(chat); db.commit(); db.refresh(chat)
+    return {"id": chat.id, "title": chat.title, "created_at": chat.created_at.isoformat()}
+
+
+@app.get("/api/v2/chats")
+def v2_list_chats(user: User = Depends(get_current_user), db: Session = Depends(get_session)):
+    rows = db.exec(select(Chat).where(Chat.user_id == user.id).order_by(Chat.created_at.desc())).all()
+    return [{"id": c.id, "title": c.title, "created_at": c.created_at.isoformat()} for c in rows]
+
+
+@app.post("/api/v2/messages")
+def v2_save_message(msg: SaveMessageIn, user: User = Depends(get_current_user), db: Session = Depends(get_session)):
+    chat = db.exec(select(Chat).where(Chat.id == msg.chat_id, Chat.user_id == user.id)).first()
+    if not chat:
+        raise HTTPException(status_code=403, detail="Forbidden")
+    m = ChatMessage(chat_id=chat.id, role=msg.role, content=msg.content)
+    db.add(m); db.commit(); db.refresh(m)
+    return {"id": m.id, "chat_id": m.chat_id, "role": m.role, "content": m.content, "created_at": m.created_at.isoformat()}
+
+
+@app.get("/api/v2/messages/{chat_id}")
+def v2_get_messages(chat_id: int, user: User = Depends(get_current_user), db: Session = Depends(get_session)):
+    chat = db.exec(select(Chat).where(Chat.id == chat_id, Chat.user_id == user.id)).first()
+    if not chat:
+        raise HTTPException(status_code=403, detail="Forbidden")
+    rows = db.exec(select(ChatMessage).where(ChatMessage.chat_id == chat.id).order_by(ChatMessage.created_at)).all()
+    return [{"id": r.id, "role": r.role, "content": r.content, "created_at": r.created_at.isoformat()} for r in rows]
+
+
+@app.delete("/api/v2/chats/{chat_id}")
+def v2_delete_chat(chat_id: int, user: User = Depends(get_current_user), db: Session = Depends(get_session)):
+    chat = db.exec(select(Chat).where(Chat.id == chat_id, Chat.user_id == user.id)).first()
+    if not chat:
+        raise HTTPException(status_code=403, detail="Forbidden")
+    # delete messages first
+    rows = db.exec(select(ChatMessage).where(ChatMessage.chat_id == chat.id)).all()
+    for r in rows:
+        db.delete(r)
+    db.delete(chat)
+    db.commit()
+    return {"status": "deleted"}
+
+
+@app.delete("/api/v2/messages/{message_id}")
+def v2_delete_message(message_id: int, user: User = Depends(get_current_user), db: Session = Depends(get_session)):
+    m = db.exec(select(ChatMessage).where(ChatMessage.id == message_id)).first()
+    if not m:
+        raise HTTPException(status_code=404, detail="Not found")
+    chat = db.exec(select(Chat).where(Chat.id == m.chat_id, Chat.user_id == user.id)).first()
+    if not chat:
+        raise HTTPException(status_code=403, detail="Forbidden")
+    db.delete(m); db.commit()
+    return {"status": "deleted"}
+
+
+class ChatTitleIn(BaseModel):
+    title: str
+
+@app.patch("/api/v2/chats/{chat_id}/title")
+def v2_update_chat_title(chat_id: int, payload: ChatTitleIn, user: User = Depends(get_current_user), db: Session = Depends(get_session)):
+    chat = db.exec(select(Chat).where(Chat.id == chat_id, Chat.user_id == user.id)).first()
+    if not chat:
+        raise HTTPException(status_code=403, detail="Forbidden")
+    title = (payload.title or "").strip()
+    if len(title) > 120:
+        title = title[:120]
+    chat.title = title
+    db.add(chat); db.commit(); db.refresh(chat)
+    return {"id": chat.id, "title": chat.title}
 
 
 # expose a simple status endpoint so the frontend can show whether the LLM path is enabled
@@ -321,12 +565,24 @@ class SignUpIn(BaseModel):
 class VerifyStatus(BaseModel):
     email: str
     is_verified: bool
+    
+class LoginIn(BaseModel):
+    user: str  # email or username (uses full_name as a simple username substitute)
+    password: str
+
+class TitleIn(BaseModel):
+    session_id: str
+    first_message: str
+
+# V2 Chat models (request/response)
+
 
 # -------- Utility endpoints for requirements --------
 @app.post("/api/emotion")
 def detect_emotion(payload: EmotionIn):
     mood = detect_mood_from_text(payload.text)
-    return {"mood": mood}
+    emotion = get_emotion(payload.text)
+    return {"mood": mood, "emotion": emotion}
 
 
 @app.get("/api/cbt_tips")
@@ -341,82 +597,152 @@ def get_cbt_tips(mood: str | None = None):
 
 
 # -------- Auth endpoints: signup and email verification --------
+def _verify_token(token: str, db: Session) -> User | None:
+    if not token:
+        return None
+    h = hash_token(token)
+    user = db.exec(select(User).where(User.verification_token_hash == h)).first()
+    if not user:
+        return None
+    if user.verification_expires and datetime.utcnow() > user.verification_expires:
+        return None
+    return user
+
+def _complete_verification(user: User, db: Session):
+    user.is_verified = True
+    user.verification_token_hash = None
+    user.verification_expires = None
+    user.verification_token = None  # legacy field cleanup if present
+    db.add(user); db.commit()
+
 @app.post("/api/auth/signup")
 def auth_signup(payload: SignUpIn, request: Request, db: Session = Depends(get_session)):
     email = (payload.email or "").strip().lower()
     name = (payload.name or "").strip()
     password = payload.password or ""
-    if not email or "@" not in email:
+    if not email or not re.match(r"^[^@\s]+@[^@\s]+\.[^@\s]+$", email):
         raise HTTPException(status_code=400, detail="Valid email required")
     if not name:
         raise HTTPException(status_code=400, detail="Name required")
     if len(password) < 6:
         raise HTTPException(status_code=400, detail="Password must be at least 6 characters")
 
-    # Existing user check
     existing = db.exec(select(User).where(User.email == email)).first()
     if existing and existing.is_verified:
         raise HTTPException(status_code=409, detail="Email already registered")
 
-    # Create or update unverified user
-    token = uuid.uuid4().hex
-    expires = datetime.utcnow() + timedelta(hours=24)
+    raw_token, expires = generate_verification_token(exp_minutes=int(os.getenv("EMAIL_VERIFY_EXP_MIN", "30")))
+    token_hash = hash_token(raw_token)
     pw_hash = _hash_password(password)
     if not existing:
         user = User(email=email, full_name=name, password_hash=pw_hash, is_verified=False,
-                    verification_token=token, verification_expires=expires)
+                    verification_token_hash=token_hash, verification_expires=expires,
+                    last_verification_sent=datetime.utcnow())
         db.add(user)
     else:
         existing.full_name = name or existing.full_name
         existing.password_hash = pw_hash
         existing.is_verified = False
-        existing.verification_token = token
+        existing.verification_token_hash = token_hash
         existing.verification_expires = expires
+        existing.last_verification_sent = datetime.utcnow()
         db.add(existing)
     db.commit()
 
-    base = os.getenv("BACKEND_BASE_URL", f"http://{request.client.host}:{request.url.port or 8000}")
-    verify_url = f"{base}/api/auth/verify?token={token}"
-
-    subject = "Verify your email"
-    html = (
-        f"<p>Hi {name or 'there'},</p>"
-        f"<p>Please verify your email for Mental Health Chat by clicking the link below:</p>"
-        f"<p><a href='{verify_url}'>Verify my email</a></p>"
-        f"<p>This link expires in 24 hours.</p>"
-    )
-    sent = _send_email(subject, email, html, text_body=f"Open this link to verify: {verify_url}")
-    # For development convenience, include the link when SMTP is not configured
+    base = os.getenv("PUBLIC_BASE_URL") or os.getenv("FRONTEND_BASE_URL") or f"http://{request.client.host}:{request.url.port or 8000}"
+    sent = send_verification_email(email, name, raw_token, base)
     if not sent:
-        logging.info("Dev verify link for %s: %s", email, verify_url)
-        return {"status": "ok", "message": "Sign-up created. Check your email for verification.", "dev_link": verify_url}
+        verify_link = f"{base.rstrip('/')}/verify?token={raw_token}"
+        logging.info("Dev verify link for %s: %s", email, verify_link)
+        return {"status": "ok", "message": "Sign-up created. Verification email could not be sent (dev mode).", "dev_link": verify_link}
     return {"status": "ok", "message": "Sign-up created. Check your email for verification."}
-
 
 @app.get("/api/auth/verify")
 def auth_verify(token: str = Query(...), db: Session = Depends(get_session)):
-    if not token:
-        raise HTTPException(status_code=400, detail="Missing token")
-    user = db.exec(select(User).where(User.verification_token == token)).first()
+    user = _verify_token(token, db)
     if not user:
-        return HTMLResponse("<h2>Invalid or already used verification link.</h2>")
-    if user.verification_expires and datetime.utcnow() > user.verification_expires:
-        return HTMLResponse("<h2>Verification link has expired. Please sign up again.</h2>")
-    user.is_verified = True
-    user.verification_token = None
-    user.verification_expires = None
-    db.add(user)
-    db.commit()
+        return HTMLResponse("<h2>Invalid or expired verification link.</h2>")
+    _complete_verification(user, db)
+    front = os.getenv("FRONTEND_BASE_URL", "http://127.0.0.1:8000/frontend")
+    return HTMLResponse(f"<html><body style='font-family:system-ui'><h2>Email verified ✅</h2><p>You can now <a href='{front}/login.html'>log in</a>.</p></body></html>")
 
-    front = os.getenv("FRONTEND_BASE_URL", "http://127.0.0.1:5500")
-    return HTMLResponse(
-        f"""
-        <html><body style='font-family:system-ui'>
-        <h2>Email verified ✅</h2>
-        <p>You can now <a href='{front}/login.html'>log in</a>.</p>
-        </body></html>
-        """
-    )
+@app.get("/verify")
+def verify_alias(token: str = Query(...), db: Session = Depends(get_session)):
+    return auth_verify(token, db)
+
+class ResendIn(BaseModel):
+    email: str
+
+@app.post("/api/auth/resend_verification")
+def resend_verification(payload: ResendIn, request: Request, db: Session = Depends(get_session)):
+    email = (payload.email or "").strip().lower()
+    if not email or not re.match(r"^[^@\s]+@[^@\s]+\.[^@\s]+$", email):
+        raise HTTPException(status_code=400, detail="Valid email required")
+    user = db.exec(select(User).where(User.email == email)).first()
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+    if user.is_verified:
+        return {"status": "already_verified"}
+    raw_token, expires = generate_verification_token(exp_minutes=int(os.getenv("EMAIL_VERIFY_EXP_MIN", "30")))
+    user.verification_token_hash = hash_token(raw_token)
+    user.verification_expires = expires
+    user.last_verification_sent = datetime.utcnow()
+    db.add(user); db.commit()
+    base = os.getenv("PUBLIC_BASE_URL") or os.getenv("FRONTEND_BASE_URL") or f"http://{request.client.host}:{request.url.port or 8000}"
+    sent = send_verification_email(user.email, user.full_name, raw_token, base)
+    if not sent:
+        link = f"{base.rstrip('/')}/verify?token={raw_token}"
+        logging.info("Dev resend verify link for %s: %s", email, link)
+        return {"status": "ok", "message": "Verification email could not be sent (dev mode).", "dev_link": link}
+    return {"status": "ok", "message": "Verification email resent."}
+
+# -------- Auth: login (JWT) --------
+@app.post("/api/auth/login")
+def auth_login(payload: LoginIn, db: Session = Depends(get_session)):
+    ident = (payload.user or "").strip()
+    pw = payload.password or ""
+    if not ident or not pw:
+        raise HTTPException(status_code=400, detail="Missing credentials")
+
+    user = None
+    if "@" in ident:
+        # treat as email
+        email = ident.lower()
+        user = db.exec(select(User).where(User.email == email)).first()
+    if not user:
+        # fallback: treat as a simple username via full_name
+        user = db.exec(select(User).where(User.full_name == ident)).first()
+
+    if not user:
+        raise HTTPException(status_code=404, detail="Username or email not found")
+    if not getattr(user, "is_verified", False):
+        raise HTTPException(status_code=403, detail="Email not verified")
+    if not _verify_password(pw, user.password_hash):
+        raise HTTPException(status_code=401, detail="Wrong password")
+
+    # Issue JWT access token for authenticated requests
+    token = create_access_token(user)
+    return {"status": "ok", "email": user.email, "name": user.full_name, "id": user.id, "token": token}
+
+
+# -------- Auth: debug list users (development only) --------
+@app.get("/api/auth/users")
+def auth_list_users(db: Session = Depends(get_session)):
+    """Return a list of user accounts for debugging.
+
+    NOTE: This endpoint is for local development only; do NOT expose in production
+    without adding authentication/authorization. It intentionally omits password hashes.
+    """
+    rows = db.exec(select(User)).all()
+    out = []
+    for u in rows:
+        out.append({
+            "email": u.email,
+            "full_name": u.full_name,
+            "is_verified": getattr(u, "is_verified", False),
+            "created_at": getattr(u, "created_at", None).isoformat() if getattr(u, "created_at", None) else None,
+        })
+    return {"users": out, "count": len(out)}
 
 
 # -------- Email sending helper (SMTP) --------
@@ -439,41 +765,9 @@ def _verify_password(pw: str, hashed: str) -> bool:
         return False
 
 
-def _send_email(subject: str, to_email: str, html_body: str, text_body: str | None = None) -> bool:
-    host = os.getenv("SMTP_HOST")
-    port = int(os.getenv("SMTP_PORT", "587"))
-    user = os.getenv("SMTP_USER")
-    pwd = os.getenv("SMTP_PASS")
-    use_tls = str(os.getenv("SMTP_TLS", "1")).lower() in ("1", "true", "yes", "on")
-    from_email = os.getenv("FROM_EMAIL", user or "no-reply@example.com")
-
-    if not host or not user or not pwd:
-        logging.warning("SMTP not configured; would send to %s with subject '%s'", to_email, subject)
-        return False
-
-    try:
-        msg = EmailMessage()
-        msg["Subject"] = subject
-        msg["From"] = from_email
-        msg["To"] = to_email
-        if text_body:
-            msg.set_content(text_body)
-            msg.add_alternative(html_body, subtype="html")
-        else:
-            # minimal plain text fallback as well
-            msg.set_content(html_body)
-
-        with smtplib.SMTP(host, port) as server:
-            server.ehlo()
-            if use_tls:
-                server.starttls()
-                server.ehlo()
-            server.login(user, pwd)
-            server.send_message(msg)
-        return True
-    except Exception:
-        logging.exception("Failed to send email to %s", to_email)
-        return False
+def _send_email(*args, **kwargs):  # legacy stub to preserve backward compatibility
+    logging.warning("_send_email legacy function called; configure EMAIL_* and use send_verification_email instead")
+    return False
 
 
 @app.post("/api/journal")
@@ -591,11 +885,18 @@ async def llm_chat(history: List[Dict[str, str]]) -> Dict[str, str]:
 
         # Normalize common typos/shorthand for better intent detection
         u = (_simple_normalize_text(last_user) or last_user).lower()
+
+        # If the user asks us to "just listen" or not give advice, honor that
+        if re.search(r"\b(just\s+listen|don'?t\s+give\s+advice|no\s+advice|please\s+listen)\b", u):
+            content = (
+                "I’m here and listening. You don’t have to rush — share whatever feels safe, in your own time."
+            )
+            return {"content": content, "mood": detect_mood_from_text(content)}
         # Handle common negations and negative qualifiers early (e.g., "not good", "not okay")
         if re.search(r"\b(not\s+(?:good|great|okay|ok|fine|happy|alright|well)|not\s+so\s+good|could\s+be\s+better|worse\b|awful\b|terrible\b|really\s+bad|so\s+bad|bad\b|meh\b|so-?so\b)\b", u):
             content = random.choice([
-                "I'm really sorry you're not feeling well. Do you want to share a bit about what's been hardest, or should we try something gentle like a short grounding cue?",
-                "That sounds rough — I'm here with you. Would it help to talk it through, or would you rather try a small calming exercise together?",
+                "That sounds really tough — I’m here with you. What part feels heaviest right now?",
+                "I’m really sorry it’s been hard. Would it help to talk it through a little, or would a gentle grounding cue feel better?",
             ])
             return {"content": content, "mood": "sad"}
         # Positive / feeling-good replies: prefer curiosity and follow-up, not an exercise.
@@ -610,9 +911,9 @@ async def llm_chat(history: List[Dict[str, str]]) -> Dict[str, str]:
         # greetings (include common abbreviations like hru, sup)
         if re.search(r"\b(hi|hello|hey|yo|howdy)\b", u) or re.search(r"\b(hru|sup|whats? up)\b", u):
             content = random.choice([
-                "Hey — nice to meet you. How are you feeling today?",
-                "Hi there! What would you like to talk about today?",
-                "Hello — I'm here to listen. What's on your mind?",
+                "Hi — I’m here with you. How are you feeling right now?",
+                "Hey there. What’s been on your mind today?",
+                "Hello — I’ll listen. What would feel helpful to talk about?",
             ])
             return {"content": content, "mood": detect_mood_from_text(content)}
 
@@ -621,22 +922,21 @@ async def llm_chat(history: List[Dict[str, str]]) -> Dict[str, str]:
             topic = 'anxiety' if 'anxiety' in u else 'depression'
             if topic == 'anxiety':
                 content = (
-                    "Anxiety is a natural stress response — a mix of worry, tension, and body alarm.\n\n"
-                    "Quick overview:\n"
-                    "• Mind: racing or ‘what if?’ thoughts\n"
-                    "• Body: fast heartbeat, tight chest, shaky or sweaty\n"
-                    "• Life: hard to sleep, concentrate, or relax\n\n"
+                    "Anxiety is a natural stress response — often a mix of worry, tension, and a body alarm.\n\n"
+                    "• Mind: fast or ‘what if?’ thoughts\n"
+                    "• Body: tight chest, quick heartbeat, shaky or sweaty\n"
+                    "• Day-to-day: harder to sleep, focus, or relax\n\n"
                     "Would you like a tiny grounding idea, or to talk about what’s been triggering it lately?"
                 )
                 return {"content": content, "mood": "anxious"}
             else:
                 content = (
-                    "Depression is more than sadness — it’s a lasting dip in mood, energy, and interest.\n\n"
-                    "Common signs:\n"
-                    "• Low mood, emptiness, or tearfulness\n"
+                    "Depression isn’t just sadness — it can be a lasting dip in mood, energy, and interest.\n\n"
+                    "Common signs can include:\n"
+                    "• Low mood or emptiness\n"
                     "• Loss of interest or pleasure\n"
-                    "• Sleep/appetite changes, low energy, foggy focus\n\n"
-                    "I’m here with you — do you want to share what it’s been like, or try one small step that could help today?"
+                    "• Changes in sleep/appetite, low energy, foggier focus\n\n"
+                    "I’m here with you. Would it help to share what it’s been like, or try one gentle step together?"
                 )
                 return {"content": content, "mood": "sad"}
 
@@ -670,16 +970,16 @@ async def llm_chat(history: List[Dict[str, str]]) -> Dict[str, str]:
         # anxiety/panic — validate and offer a short option set rather than a single prescriptive action
         if re.search(r"\b(anxious|anxiety|panic|nervous)\b", u):
             content = random.choice([
-                "I hear that — anxiety can be overwhelming. Would you like a quick breathing cue, a grounding exercise, or some techniques to slow your thoughts?",
-                "That sounds scary. I can stay here and listen, or we can try a short grounding exercise together — what would you prefer?",
+                "I hear you — anxiety can feel intense. We can simply talk, or I can offer a tiny grounding cue. What would help right now?",
+                "That sounds overwhelming. Would you like a short grounding or breathing cue, or should we just sit with it for a bit?",
             ])
             return {"content": content, "mood": "anxious"}
 
         # help / overwhelmed
         if re.search(r"\b(help|overwhelmed|too much|need help)\b", u):
             content = random.choice([
-                "I’m here with you. Would talking through what’s overwhelming help, or would you prefer a short practical step we can try together?",
-                "That sounds like a lot to hold. We can break it down together — want to tell me one thing that’s hardest right now?",
+                "That sounds like a lot. I’m here with you. Would it help to talk it through a little, or try one tiny step together?",
+                "Thanks for sharing — that’s heavy. What’s one part that feels most present right now?",
             ])
             return {"content": content, "mood": "encouraging"}
 
@@ -693,8 +993,8 @@ async def llm_chat(history: List[Dict[str, str]]) -> Dict[str, str]:
 
         # fallback: empathic reflection without quoting the user's text; offer choices
         content = random.choice([
-            "Thanks for sharing that — I can listen, offer a short exercise, or try to cheer you up. Which would you prefer?",
-            "I’m here with you. Would it help to talk it through a bit, or should we try a tiny grounding cue together?",
+            "Thank you for telling me. I can simply listen, or offer a small grounding idea — what would feel most supportive?",
+            "I’m here with you. Would you like to talk it through a little, or try a tiny calming step together?",
         ])
         return {"content": content, "mood": detect_mood_from_text(last_user or content)}
 
@@ -724,17 +1024,21 @@ async def llm_chat(history: List[Dict[str, str]]) -> Dict[str, str]:
         # Allowed moods: sad, anxious, happy, grateful, encouraging, neutral
         # Conversation style: fuller, friendlier replies similar to ChatGPT, while keeping safety constraints.
         system_msg = (
-            "You are a warm, curious, and patient mental-health companion.\n"
-            "Style: conversational and natural (like ChatGPT) — write 1–3 short paragraphs and, when helpful, 2–5 clear bullet points.\n"
-            "Do NOT quote the user's text back verbatim and do not surround it with quotes. Interpret shorthand like 'hru' as 'how are you'.\n"
-            "Use empathy and curiosity first; ask one light follow-up. Provide small, practical help when asked (breathing, grounding, CBT tips), but first ask for consent.\n"
-            "If the user asks an informational question (e.g., 'what is anxiety?'), give a concise, accurate explanation with helpful bullets, then one invitational question.\n"
-            "Crisis: if the user expresses self-harm or suicide intent, respond supportively and encourage immediate help, referencing local crisis options (do not provide instructions for harm).\n\n"
+            "You are a friendly, calm, emotionally supportive mental-health companion.\n"
+            "Tone: warm, respectful, slow, caring, non-judgmental; sound natural and human-like.\n"
+            "Core behaviors: validate feelings before suggestions; listen first; ask one open, gentle question; never diagnose or give medical/legal advice; avoid clichés; avoid commands; no long lectures; keep 1–3 short paragraphs; when helpful use 2–5 brief bullets.\n"
+            "Calm Grounding Mode: when the user describes physical fear, panic, anxiety, or symptoms like short breath, dizziness, shaking, racing heart, or ‘I feel like I’m going to die,’ you MUST shift into a calm grounding style: validate fear first; short sentences; reassuring tone; one gentle cue at a time (e.g., ‘Tell me one thing you can see’, ‘Place a hand on your chest and notice the movement’, ‘Feel your feet on the ground’, ‘Take one slow breath with me’); always ask ‘Are you in a safe place right now?’; do not diagnose or imply medical safety; do not use numbered steps; avoid long text; stay present and respond moment-to-moment.\n"
+            "Emotion adaptability: you can handle ANY scenario (happy, playful, curious, sad, angry, confused, tired, stressed, grieving, excited, grateful, hopeful, etc.). Acknowledge emotion first and match intensity. Be playful ONLY when the user is lighthearted — never during distress. You can talk about normal topics (hobbies, games, food, travel, lifestyle) and answer general questions.\n"
+            "If the user wants you to just listen, honor that.\n"
+            "Focus on their feelings and safety. Encourage self-awareness and tiny, doable steps.\n"
+            "Do NOT quote the user's text verbatim or surround it with quotes. Interpret shorthand like 'hru' as 'how are you'.\n"
+            "Emoji policy: Do NOT include emojis yourself; a system layer will add them.\n"
+            "Crisis mode — if self-harm or suicide intent appears: (1) Acknowledge with deep empathy; (2) Assess safety with gentle questions (e.g., ‘Are you in a safe place?’ ‘Is there someone you trust who can be with you?’); (3) Encourage reaching out to a real person; (4) Provide crisis resources (e.g., AU: Lifeline 13 11 14, Suicide Call Back 1300 659 467; US: 988; otherwise local emergency number); (5) Stay present and supportive; (6) Slow and stabilize with grounding or calm breathing if appropriate. Never provide methods, instructions, or steps for self-harm. Never diagnose or give medical/legal advice.\n\n"
             "Output policy: OUTPUT ONLY a JSON object with keys: {\"content\": <string>, \"mood\": <one-word-label>} and nothing else.\n"
             "Mood must be one of: sad, anxious, happy, grateful, encouraging, neutral.\n\n"
             "Examples (exact JSON only):\n"
-            "{\"content\": \"That makes a lot of sense — anxiety can feel like a fast, worried mind. Would you like a quick grounding idea, or to talk about what's been triggering it lately?\", \"mood\": \"anxious\"}\n"
-            "{\"content\": \"I’m really sorry — that sounds painful. Which part feels heaviest right now, or would a short grounding option help?\", \"mood\": \"sad\"}"
+            "{\"content\": \"That makes a lot of sense — anxiety can feel intense. Would you like a tiny grounding idea, or to talk about what's been triggering it lately?\", \"mood\": \"anxious\"}\n"
+            "{\"content\": \"I’m really sorry — that sounds painful. Which part feels most present right now, or would a gentle grounding option help?\", \"mood\": \"sad\"}"
         )
 
         resp = client.chat.completions.create(
@@ -832,7 +1136,7 @@ async def llm_chat(history: List[Dict[str, str]]) -> Dict[str, str]:
 def create_session(session: str | None = None, db: Session = Depends(get_session)):
     sid = session or str(uuid.uuid4())
     if not db.exec(select(ChatSession).where(ChatSession.session_id == sid)).first():
-        db.add(ChatSession(session_id=sid))
+        db.add(ChatSession(session_id=sid, title=None))
         db.commit()
     return {"session_id": sid}
 
@@ -904,9 +1208,24 @@ async def chat(payload: ChatIn, request: Request, db: Session = Depends(get_sess
 
     if looks_like_crisis(user_text):
         db.add(SafetyEvent(session_id=sid, kind="crisis", payload=user_text))
-        db.add(Message(session_id=sid, role="assistant", content=CRISIS_RESPONSE_AU))
+        crisis_text = apply_emoji(CRISIS_RESPONSE_AU, "trauma_dissociation", serious=True)
+        db.add(Message(session_id=sid, role="assistant", content=crisis_text))
         db.commit()
-        return JSONResponse({"reply": CRISIS_RESPONSE_AU, "crisis": True})
+        return JSONResponse({"reply": crisis_text, "crisis": True})
+
+    # Calming grounding mode for panic-like physical symptoms
+    if looks_like_panic(user_text):
+        calm = apply_emoji(grounding_mode_reply(), "panic_fear", serious=True)
+        db.add(Message(session_id=sid, role="assistant", content=calm, mood="anxious"))
+        db.commit()
+        return JSONResponse({"reply": calm, "mood": "anxious", "crisis": False, "grounding": True})
+
+    # Trauma/dissociation soft path
+    if looks_like_trauma(user_text):
+        soft = apply_emoji(trauma_mode_reply(), "trauma_dissociation", serious=True)
+        db.add(Message(session_id=sid, role="assistant", content=soft, mood="sad"))
+        db.commit()
+        return JSONResponse({"reply": soft, "mood": "sad", "crisis": False, "grounding": True})
 
     # Normalize user input and handle gibberish / misspellings conservatively
     original_user_text = payload.messages[-1].content.strip()
@@ -1052,11 +1371,116 @@ async def chat(payload: ChatIn, request: Request, db: Session = Depends(get_sess
     # Post-process: if user was positive, ensure assistant does not suggest exercises
     reply_text = _postprocess_reply_for_positive_user(user_text, reply_text)
 
+    # Emotion-aware emoji placement (0–1 emoji, start or end)
+    user_emotion = get_emotion(user_text)
+    serious = user_emotion in {"panic_fear", "trauma_dissociation", "overwhelmed_stressed", "sad_hurt", "angry_frustrated", "worried_anxious"}
+    # Ensure anxious replies include an option for grounding/breathing to satisfy UX/tests
+    if user_emotion == "worried_anxious" and not re.search(r"\b(exercise|breath|ground|option)\b", reply_text.lower()):
+        reply_text = reply_text.strip() + " Would you like a short grounding or breathing exercise?"
+    reply_text = apply_emoji(reply_text, user_emotion, serious=serious)
+
     # Save assistant turn (store textual content and mood)
     db.add(Message(session_id=sid, role="assistant", content=reply_text, mood=reply_mood))
     db.commit()
 
+    # After first user message + first assistant reply, if no title set generate asynchronously
+    try:
+        sess_ref = db.exec(select(ChatSession).where(ChatSession.session_id == sid)).first()
+        if sess_ref and not getattr(sess_ref, 'title', None):
+            # basic heuristic: if this is the first exchange (only 1 user + 1 assistant message) then create title
+            try:
+                count = len(db.exec(select(Message).where(Message.session_id == sid)).all())
+            except Exception:
+                # Fallback in case of driver differences
+                rows = db.exec(select(Message).where(Message.session_id == sid)).all()
+                count = len(rows)
+            if count <= 2:
+                # Fire-and-forget background LLM call using a short thread
+                import threading
+                def _bg_title(first_msg: str, session_id: str):
+                    try:
+                        title = generate_title_internal(first_msg)
+                        # persist title
+                        with Session(engine) as _s:
+                            row = _s.exec(select(ChatSession).where(ChatSession.session_id == session_id)).first()
+                            if row:
+                                row.title = title
+                                _s.add(row); _s.commit()
+                    except Exception:
+                        logging.exception("Failed to generate chat title asynchronously")
+                threading.Thread(target=_bg_title, args=(user_text, sid), daemon=True).start()
+    except Exception:
+        logging.exception("Title generation scheduling failed")
+
     return JSONResponse({"reply": reply_text, "mood": reply_mood, "crisis": False})
+
+
+def _sanitize_title(raw: str, fallback_source: str) -> str:
+    if not raw: raw = ''
+    # Remove quotes and punctuation (except spaces)
+    cleaned = re.sub(r"[\"'`.,!?;:()_-]", "", raw).strip()
+    words = cleaned.split()
+    if len(words) < 1:
+        words = re.sub(r"[\"'`.,!?;:()_-]", "", fallback_source).strip().split()[:4]
+    if len(words) > 4:
+        words = words[:4]
+    # Ensure at least 2 words if possible
+    if len(words) == 1:
+        # try to pull second word from fallback source
+        more = re.sub(r"[\"'`.,!?;:()_-]", "", fallback_source).strip().split()
+        if len(more) > 1:
+            words = (words + more[1:2])
+    return " ".join(words).lower()
+
+def generate_title_internal(first_message: str) -> str:
+    prompt = (
+        "You generate very short chat titles. \n"
+        "Rules:\n- Maximum 4 words\n- Emotion-based summary\n- No punctuation\n- No quotes\n- No advice\n- Only output the title\n"
+        f"Input: {first_message}".strip()
+    )
+    if client:
+        try:
+            resp = client.chat.completions.create(
+                model="gpt-4o-mini",
+                temperature=0.5,
+                max_tokens=12,
+                messages=[{"role": "system", "content": "Return ONLY the title."}, {"role": "user", "content": prompt}],
+            )
+            raw = (resp.choices[0].message.content or "").strip()
+            return _sanitize_title(raw, first_message)
+        except Exception:
+            logging.exception("LLM title generation failed; falling back")
+    # local heuristic fallback: pick strongest mood word or first 4 words
+    low = first_message.lower()
+    mood_words = [
+        ("overwhelmed", re.search(r"\boverwhelmed\b", low)),
+        ("anxious", re.search(r"\banxious|panic|worried\b", low)),
+        ("sad", re.search(r"\bsad|miserable|down\b", low)),
+        ("angry", re.search(r"\bangry|pissed|mad\b", low)),
+        ("numb", re.search(r"\bnumb|empty\b", low)),
+        ("lonely", re.search(r"\blonely|alone\b", low)),
+        ("tired", re.search(r"\btired|exhausted\b", low)),
+        ("hopeful", re.search(r"\bhopeful|optimistic\b", low)),
+        ("grateful", re.search(r"\bgrateful|thank\b", low)),
+    ]
+    for w, m in mood_words:
+        if m: return w
+    return _sanitize_title("", first_message)
+
+@app.post("/api/title")
+def generate_title(payload: TitleIn, db: Session = Depends(get_session)):
+    first = (payload.first_message or "").strip()
+    if not first:
+        raise HTTPException(status_code=400, detail="first_message required")
+    sess = db.exec(select(ChatSession).where(ChatSession.session_id == payload.session_id)).first()
+    if not sess:
+        raise HTTPException(status_code=404, detail="Session not found")
+    if getattr(sess, 'title', None):
+        return {"title": sess.title}
+    title = generate_title_internal(first)
+    sess.title = title
+    db.add(sess); db.commit()
+    return {"title": title}
 
 
 @app.get("/api/logs")

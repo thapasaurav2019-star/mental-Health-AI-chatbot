@@ -7,6 +7,12 @@ DB_PATH = os.getenv("CHATBOT_DB", "chat.db")
 engine = create_engine(f"sqlite:///{DB_PATH}", echo=False, connect_args={"check_same_thread": False})
 
 def init_db():
+    # Ensure FK enforcement on SQLite
+    try:
+        with engine.connect() as conn:
+            conn.exec_driver_sql("PRAGMA foreign_keys=ON")
+    except Exception:
+        pass
     SQLModel.metadata.create_all(engine)
     # Ensure schema has the `mood` column on Message for older databases.
     # SQLite doesn't automatically add columns via SQLModel.create_all for existing tables,
@@ -25,6 +31,8 @@ def init_db():
                 conn.exec_driver_sql("ALTER TABLE chatsession ADD COLUMN pending_tool TEXT")
             if 'state' not in c2:
                 conn.exec_driver_sql("ALTER TABLE chatsession ADD COLUMN state TEXT")
+            if 'title' not in c2:
+                conn.exec_driver_sql("ALTER TABLE chatsession ADD COLUMN title TEXT")
             # Ensure User table has new columns if added later (best-effort idempotent additions)
             try:
                 res3 = conn.exec_driver_sql("PRAGMA table_info('users')")
@@ -34,6 +42,10 @@ def init_db():
                     conn.exec_driver_sql("ALTER TABLE users ADD COLUMN verification_token TEXT")
                 if ucols and 'is_verified' in ucols and 'verification_expires' not in ucols:
                     conn.exec_driver_sql("ALTER TABLE users ADD COLUMN verification_expires DATETIME")
+                if ucols and 'verification_token_hash' not in ucols:
+                    conn.exec_driver_sql("ALTER TABLE users ADD COLUMN verification_token_hash TEXT")
+                if ucols and 'last_verification_sent' not in ucols:
+                    conn.exec_driver_sql("ALTER TABLE users ADD COLUMN last_verification_sent DATETIME")
             except Exception:
                 pass
     except Exception:
